@@ -1,0 +1,326 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { HISTORY_LIMIT, type Store } from "../server/types.ts";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Reusable contract suite: every Store implementation must pass it.
+// makeStore must return a fresh, empty store on each call.
+export function runStoreContract(name: string, makeStore: () => Store | Promise<Store>) {
+  const contract = (title: string, fn: (store: Store) => Promise<void>) =>
+    test(`${name}: ${title}`, async () => {
+      await fn(await makeStore());
+    });
+
+  // --- sessions ---
+
+  contract("creates sessions with trimmed fields and defaults", async (store) => {
+    const session = await store.createSession({ agent: "  pi  ", title: "  Auth flow  " });
+    assert.equal(session.agent, "pi");
+    assert.equal(session.title, "Auth flow");
+    assert.equal(session.lastActiveAt, session.createdAt);
+
+    const blank = await store.createSession({ agent: "   " });
+    assert.equal(blank.agent, "agent");
+    assert.equal(blank.title, null);
+    assert.equal(blank.cwd, null);
+
+    assert.deepEqual(await store.getSession(session.id), session);
+    assert.equal(await store.getSession("missing"), null);
+  });
+
+  contract("renames sessions; blank title clears it; unknown id is null", async (store) => {
+    const session = await store.createSession({ agent: "pi", title: "Old" });
+    const renamed = await store.renameSession(session.id, "  New  ");
+    assert.equal(renamed?.title, "New");
+    assert.equal((await store.getSession(session.id))?.title, "New");
+
+    const cleared = await store.renameSession(session.id, "   ");
+    assert.equal(cleared?.title, null);
+
+    assert.equal(await store.renameSession("missing", "X"), null);
+  });
+
+  contract("lists sessions by lastActiveAt, newest first; activity reorders", async (store) => {
+    const a = await store.createSession({ agent: "a" });
+    await sleep(10);
+    const b = await store.createSession({ agent: "b" });
+    assert.deepEqual(
+      (await store.listSessions()).map((s) => s.id),
+      [b.id, a.id],
+    );
+
+    // publishing into the older session bumps it to the front
+    await sleep(10);
+    await store.createSnippet({ sessionId: a.id, html: "<p>x</p>" });
+    assert.deepEqual(
+      (await store.listSessions()).map((s) => s.id),
+      [a.id, b.id],
+    );
+
+    // a comment counts as activity too
+    await sleep(10);
+    await store.createComment({ sessionId: b.id, author: "user", text: "hi" });
+    assert.deepEqual(
+      (await store.listSessions()).map((s) => s.id),
+      [b.id, a.id],
+    );
+  });
+
+  contract("removeSession returns false for unknown ids", async (store) => {
+    assert.equal(await store.removeSession("missing"), false);
+    const session = await store.createSession({ agent: "pi" });
+    assert.equal(await store.removeSession(session.id), true);
+    assert.equal(await store.removeSession(session.id), false);
+  });
+
+  // --- snippets ---
+
+  contract("creates snippets with defaults; unknown session is null", async (store) => {
+    assert.equal(await store.createSnippet({ sessionId: "missing", html: "<p>x</p>" }), null);
+
+    const session = await store.createSession({ agent: "pi" });
+    const snippet = await store.createSnippet({ sessionId: session.id, html: "<p>x</p>" });
+    assert.ok(snippet);
+    assert.equal(snippet.title, "Untitled");
+    assert.equal(snippet.version, 1);
+    assert.deepEqual(snippet.history, []);
+    assert.equal(snippet.updatedAt, snippet.createdAt);
+
+    const titled = await store.createSnippet({
+      sessionId: session.id,
+      title: "  Sketch  ",
+      html: "<p>y</p>",
+    });
+    assert.equal(titled?.title, "Sketch");
+
+    assert.deepEqual(await store.getSnippet(snippet.id), snippet);
+    assert.equal(await store.getSnippet("missing"), null);
+  });
+
+  contract("lists snippets oldest first, optionally filtered by session", async (store) => {
+    const one = await store.createSession({ agent: "a" });
+    const two = await store.createSession({ agent: "b" });
+    const s1 = await store.createSnippet({ sessionId: one.id, html: "<p>1</p>" });
+    await sleep(10);
+    const s2 = await store.createSnippet({ sessionId: two.id, html: "<p>2</p>" });
+    await sleep(10);
+    const s3 = await store.createSnippet({ sessionId: one.id, html: "<p>3</p>" });
+
+    assert.deepEqual(
+      (await store.listSnippets()).map((s) => s.id),
+      [s1?.id, s2?.id, s3?.id],
+    );
+    assert.deepEqual(
+      (await store.listSnippets(one.id)).map((s) => s.id),
+      [s1?.id, s3?.id],
+    );
+    assert.deepEqual(await store.listSnippets("missing"), []);
+  });
+
+  contract("updates bump the version and archive the previous one", async (store) => {
+    const session = await store.createSession({ agent: "pi" });
+    const snippet = await store.createSnippet({
+      sessionId: session.id,
+      title: "T",
+      html: "<p>v1</p>",
+    });
+    assert.ok(snippet);
+
+    const updated = await store.updateSnippet(snippet.id, { html: "<p>v2</p>" });
+    assert.equal(updated?.version, 2);
+    assert.equal(updated?.html, "<p>v2</p>");
+    assert.equal(updated?.title, "T");
+    assert.equal(updated?.history.length, 1);
+    assert.deepEqual(updated?.history[0], {
+      version: 1,
+      title: "T",
+      html: "<p>v1</p>",
+      at: snippet.updatedAt,
+    });
+
+    // title-only patch keeps html; blank title keeps the old title
+    const retitled = await store.updateSnippet(snippet.id, { title: "T2" });
+    assert.equal(retitled?.title, "T2");
+    assert.equal(retitled?.html, "<p>v2</p>");
+    const blank = await store.updateSnippet(snippet.id, { title: "  ", html: "<p>v4</p>" });
+    assert.equal(blank?.title, "T2");
+    assert.equal(blank?.version, 4);
+
+    // the same state is visible on a fresh read
+    assert.deepEqual(await store.getSnippet(snippet.id), blank);
+
+    assert.equal(await store.updateSnippet("missing", { html: "<p>x</p>" }), null);
+  });
+
+  contract(`caps history at ${HISTORY_LIMIT} versions`, async (store) => {
+    const session = await store.createSession({ agent: "pi" });
+    const snippet = await store.createSnippet({ sessionId: session.id, html: "<p>v1</p>" });
+    assert.ok(snippet);
+    const updates = HISTORY_LIMIT + 5;
+    for (let i = 2; i <= updates + 1; i++) {
+      await store.updateSnippet(snippet.id, { html: `<p>v${i}</p>` });
+    }
+    const final = await store.getSnippet(snippet.id);
+    assert.equal(final?.version, updates + 1);
+    assert.equal(final?.history.length, HISTORY_LIMIT);
+    // oldest entries fell off the front; the newest archived version remains
+    assert.equal(final?.history[0].version, updates + 1 - HISTORY_LIMIT);
+    assert.equal(final?.history[HISTORY_LIMIT - 1].version, updates);
+    assert.equal(final?.history[HISTORY_LIMIT - 1].html, `<p>v${updates}</p>`);
+  });
+
+  // --- cascade deletes ---
+
+  contract("removing a session cascades to its snippets and comments", async (store) => {
+    const doomed = await store.createSession({ agent: "a" });
+    const kept = await store.createSession({ agent: "b" });
+    const doomedSnippet = await store.createSnippet({ sessionId: doomed.id, html: "<p>x</p>" });
+    const keptSnippet = await store.createSnippet({ sessionId: kept.id, html: "<p>y</p>" });
+    await store.createComment({
+      sessionId: doomed.id,
+      snippetId: doomedSnippet?.id,
+      author: "user",
+      text: "bye",
+    });
+    await store.createComment({ sessionId: kept.id, author: "user", text: "stay" });
+
+    assert.equal(await store.removeSession(doomed.id), true);
+    assert.equal(await store.getSession(doomed.id), null);
+    assert.equal(await store.getSnippet(doomedSnippet?.id ?? ""), null);
+    assert.deepEqual(
+      (await store.listSnippets()).map((s) => s.id),
+      [keptSnippet?.id],
+    );
+    const comments = await store.listComments({});
+    assert.equal(comments.length, 1);
+    assert.equal(comments[0].text, "stay");
+  });
+
+  contract("removing a snippet cascades to its comments only", async (store) => {
+    const session = await store.createSession({ agent: "pi" });
+    const doomed = await store.createSnippet({ sessionId: session.id, html: "<p>x</p>" });
+    const kept = await store.createSnippet({ sessionId: session.id, html: "<p>y</p>" });
+    await store.createComment({
+      sessionId: session.id,
+      snippetId: doomed?.id,
+      author: "user",
+      text: "on doomed",
+    });
+    await store.createComment({
+      sessionId: session.id,
+      snippetId: kept?.id,
+      author: "user",
+      text: "on kept",
+    });
+    await store.createComment({ sessionId: session.id, author: "user", text: "on session" });
+
+    assert.equal(await store.removeSnippet(doomed?.id ?? ""), true);
+    assert.equal(await store.removeSnippet(doomed?.id ?? ""), false);
+    assert.ok(await store.getSession(session.id));
+    const texts = (await store.listComments({})).map((c) => c.text);
+    assert.deepEqual(texts.sort(), ["on kept", "on session"]);
+  });
+
+  // --- comments ---
+
+  contract("creates comments; unknown session is null", async (store) => {
+    assert.equal(
+      await store.createComment({ sessionId: "missing", author: "user", text: "x" }),
+      null,
+    );
+
+    const session = await store.createSession({ agent: "pi" });
+    const snippet = await store.createSnippet({
+      sessionId: session.id,
+      title: "Sketch",
+      html: "<p>x</p>",
+    });
+    const onSnippet = await store.createComment({
+      sessionId: session.id,
+      snippetId: snippet?.id,
+      author: "  user  ",
+      text: "love it",
+    });
+    assert.equal(onSnippet?.author, "user");
+    assert.equal(onSnippet?.snippetId, snippet?.id);
+    assert.equal(onSnippet?.snippetTitle, "Sketch");
+
+    // a session-level comment, and one pointing at a snippet that doesn't exist
+    const onSession = await store.createComment({
+      sessionId: session.id,
+      author: "",
+      text: "general",
+    });
+    assert.equal(onSession?.snippetId, null);
+    assert.equal(onSession?.snippetTitle, null);
+    assert.equal(onSession?.author, "user");
+    const ghost = await store.createComment({
+      sessionId: session.id,
+      snippetId: "missing",
+      author: "user",
+      text: "ghost",
+    });
+    assert.equal(ghost?.snippetId, null);
+  });
+
+  contract("comment seq is strictly monotonic, even across deletes", async (store) => {
+    const first = await store.createSession({ agent: "a" });
+    const c1 = await store.createComment({ sessionId: first.id, author: "user", text: "1" });
+    const c2 = await store.createComment({ sessionId: first.id, author: "user", text: "2" });
+    assert.ok(c1 && c2);
+    assert.ok(c2.seq > c1.seq);
+
+    // deleting everything must not let seq numbers be reused
+    await store.removeSession(first.id);
+    const second = await store.createSession({ agent: "b" });
+    const c3 = await store.createComment({ sessionId: second.id, author: "user", text: "3" });
+    assert.ok(c3);
+    assert.ok(c3.seq > c2.seq);
+  });
+
+  contract("filters comments by session, snippet, and afterSeq", async (store) => {
+    const one = await store.createSession({ agent: "a" });
+    const two = await store.createSession({ agent: "b" });
+    const snippet = await store.createSnippet({ sessionId: one.id, html: "<p>x</p>" });
+    const a = await store.createComment({
+      sessionId: one.id,
+      snippetId: snippet?.id,
+      author: "user",
+      text: "a",
+    });
+    const b = await store.createComment({ sessionId: one.id, author: "user", text: "b" });
+    const c = await store.createComment({ sessionId: two.id, author: "user", text: "c" });
+    assert.ok(a && b && c);
+
+    const all = await store.listComments({});
+    assert.deepEqual(
+      all.map((x) => x.text),
+      ["a", "b", "c"],
+    );
+    // ascending seq order
+    const seqs = all.map((x) => x.seq);
+    assert.deepEqual(
+      seqs,
+      [...seqs].sort((x, y) => x - y),
+    );
+
+    assert.deepEqual(
+      (await store.listComments({ sessionId: one.id })).map((x) => x.text),
+      ["a", "b"],
+    );
+    assert.deepEqual(
+      (await store.listComments({ snippetId: snippet?.id ?? "" })).map((x) => x.text),
+      ["a"],
+    );
+    assert.deepEqual(
+      (await store.listComments({ afterSeq: a.seq })).map((x) => x.text),
+      ["b", "c"],
+    );
+    assert.deepEqual(
+      (await store.listComments({ sessionId: one.id, afterSeq: a.seq })).map((x) => x.text),
+      ["b"],
+    );
+    assert.deepEqual(await store.listComments({ sessionId: "missing" }), []);
+  });
+}
