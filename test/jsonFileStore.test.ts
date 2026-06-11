@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { JsonFileStore } from "../server/storage.ts";
+import { runStoreContract } from "./storeContract.ts";
+
+const freshPath = () => join(mkdtempSync(join(tmpdir(), "sideshow-store-")), "data.json");
+
+runStoreContract("JsonFileStore", () => new JsonFileStore(freshPath()));
+
+test("JsonFileStore: data survives a reload from disk", async () => {
+  const path = freshPath();
+  const store = new JsonFileStore(path);
+  const session = await store.createSession({ agent: "pi", title: "Persisted" });
+  const snippet = await store.createSnippet({ sessionId: session.id, html: "<p>x</p>" });
+  await store.updateSnippet(snippet?.id ?? "", { html: "<p>v2</p>" });
+  await store.createComment({
+    sessionId: session.id,
+    snippetId: snippet?.id,
+    author: "user",
+    text: "hi",
+  });
+
+  const reloaded = new JsonFileStore(path);
+  assert.equal((await reloaded.getSession(session.id))?.title, "Persisted");
+  const got = await reloaded.getSnippet(snippet?.id ?? "");
+  assert.equal(got?.version, 2);
+  assert.equal(got?.history.length, 1);
+  const comments = await reloaded.listComments({});
+  assert.equal(comments.length, 1);
+  // lastSeq is restored too: the next comment continues the sequence
+  const next = await reloaded.createComment({ sessionId: session.id, author: "user", text: "2" });
+  assert.ok(next && next.seq > comments[0].seq);
+});

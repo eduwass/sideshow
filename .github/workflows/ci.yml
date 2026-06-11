@@ -27,6 +27,18 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:e2e
+
   pack-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -45,4 +57,5 @@ jobs:
           for i in $(seq 1 20); do curl -sf localhost:4242/api/sessions > /dev/null && break; sleep 0.5; done
           echo '<p>ci smoke</p>' | sideshow publish - --title "CI smoke" --agent ci | tee /tmp/out.json
           grep -q '"sessionId"' /tmp/out.json
+          sideshow demo | grep -q "Seeded 2 demo sessions"
           curl -sf localhost:4242/guide > /dev/null

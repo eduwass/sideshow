@@ -20,6 +20,10 @@ Above: an agent published a sequence diagram while working on an auth
 refactor. The user asked a question under it, and the agent answered in the
 thread and revised the snippet.
 
+The loop in motion — publish, live appear, comment, revise:
+
+![Animated demo: an agent publishes a diagram that appears live in the viewer, the user types a question under it, and the agent revises the snippet to a second version and replies in the thread](docs/sideshow-demo.gif)
+
 ## Quick start
 
 Requires Node 22.18 or newer.
@@ -37,6 +41,9 @@ curl -s http://localhost:4242/setup >> AGENTS.md
 
 That block teaches any agent with a shell tool (pi, opencode, amp, codex,
 Claude Code) how to publish snippets and poll for your comments using curl.
+
+No agent handy? `npx sideshow demo` seeds two example sessions so you can
+look around the viewer.
 
 ## Connecting agents
 

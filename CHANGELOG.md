@@ -6,6 +6,10 @@ All notable user-visible changes to this project are documented in this file.
 
 ### Added
 
+- `sideshow demo` seeds two example sessions (a sequence diagram with a
+  comment thread, an interactive explainer, a metrics card) so the viewer can
+  be explored without an agent.
+
 ### Changed
 
 ### Fixed
