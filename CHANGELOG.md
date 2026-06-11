@@ -6,6 +6,16 @@ All notable user-visible changes to this project are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.1.0] - 2026-06-11
+
+First release.
+
+### Added
+
 - Initial release: live preview surface (Hono server + single-file viewer)
   with sessions, versioned snippets, and comment threads.
 - Zero-dependency `sideshow` CLI: `serve`, `publish`, `update`, `wait`,
@@ -28,7 +38,3 @@ All notable user-visible changes to this project are documented in this file.
   cookie flow for the viewer; `/guide` and `/setup` stay public.
 - Claude Code skill at `skills/sideshow/` teaching agents the publish →
   feedback → iterate workflow.
-
-### Changed
-
-### Fixed
