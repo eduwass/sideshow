@@ -1,0 +1,73 @@
+{
+  "name": "sideshow",
+  "version": "0.1.0",
+  "description": "A live visual surface for terminal coding agents — agents draw HTML snippets, you watch them in the browser and comment back.",
+  "keywords": [
+    "agent-tools",
+    "ai-agents",
+    "claude-code",
+    "coding-agents",
+    "html-preview",
+    "mcp",
+    "visualization"
+  ],
+  "homepage": "https://github.com/benvinegar/sideshow#readme",
+  "bugs": {
+    "url": "https://github.com/benvinegar/sideshow/issues"
+  },
+  "license": "MIT",
+  "author": "Ben Vinegar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benvinegar/sideshow.git"
+  },
+  "bin": {
+    "sideshow": "bin/sideshow.js"
+  },
+  "files": [
+    "bin/",
+    "server/",
+    "mcp/",
+    "viewer/",
+    "guide/"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server/index.ts",
+    "start": "node server/index.ts",
+    "mcp": "node mcp/server.ts",
+    "test": "node --test 'test/**/*.test.ts'",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint . --deny-warnings",
+    "lint:fix": "oxlint . --fix",
+    "typecheck": "tsc --noEmit",
+    "prepare": "simple-git-hooks"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "hono": "^4.7.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "lint-staged": "^17.0.7",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^6.0.3"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npx lint-staged"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs,cjs}": [
+      "oxfmt --write",
+      "oxlint --deny-warnings"
+    ]
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

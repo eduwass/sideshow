@@ -1,0 +1,173 @@
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { createApp } from "../server/app.ts";
+import { JsonFileStore } from "../server/storage.ts";
+
+function makeApp(authToken?: string) {
+  const dir = mkdtempSync(join(tmpdir(), "sideshow-test-"));
+  const store = new JsonFileStore(join(dir, "data.json"));
+  return createApp({
+    store,
+    viewerHtml: "<html>viewer</html>",
+    guideMarkdown: "# guide",
+    setupText: "# setup",
+    authToken,
+  });
+}
+
+const json = (body: unknown) => ({
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+test("publish without session auto-creates one", async () => {
+  const app = makeApp();
+  const res = await app.request(
+    "/api/snippets",
+    json({ html: "<p>hi</p>", agent: "pi", title: "First" }),
+  );
+  assert.equal(res.status, 201);
+  const snippet = (await res.json()) as any;
+  assert.ok(snippet.id);
+  assert.ok(snippet.sessionId);
+  assert.equal(snippet.title, "First");
+  assert.equal(snippet.version, 1);
+
+  const sessions = (await (await app.request("/api/sessions")).json()) as any;
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].agent, "pi");
+  assert.equal(sessions[0].snippetCount, 1);
+});
+
+test("publish into an existing session groups snippets", async () => {
+  const app = makeApp();
+  const first = (await (
+    await app.request("/api/snippets", json({ html: "<p>1</p>", agent: "amp" }))
+  ).json()) as any;
+  await app.request("/api/snippets", json({ html: "<p>2</p>", session: first.sessionId }));
+  const list = (await (
+    await app.request(`/api/sessions/${first.sessionId}/snippets`)
+  ).json()) as any;
+  assert.equal(list.length, 2);
+});
+
+test("publish into unknown session 404s instead of silently creating", async () => {
+  const app = makeApp();
+  const res = await app.request("/api/snippets", json({ html: "<p>x</p>", session: "nope" }));
+  assert.equal(res.status, 404);
+});
+
+test("update bumps version and keeps history; old version renderable", async () => {
+  const app = makeApp();
+  const s = (await (
+    await app.request("/api/snippets", json({ html: "<p>v1</p>", title: "T" }))
+  ).json()) as any;
+  const res = await app.request(`/api/snippets/${s.id}`, {
+    ...json({ html: "<p>v2</p>" }),
+    method: "PUT",
+  });
+  const updated = (await res.json()) as any;
+  assert.equal(updated.version, 2);
+
+  const full = (await (await app.request(`/api/snippets/${s.id}`)).json()) as any;
+  assert.equal(full.history.length, 1);
+  assert.equal(full.history[0].html, "<p>v1</p>");
+
+  const current = await (await app.request(`/s/${s.id}`)).text();
+  assert.ok(current.includes("<p>v2</p>"));
+  const old = await (await app.request(`/s/${s.id}?ver=1`)).text();
+  assert.ok(old.includes("<p>v1</p>"));
+});
+
+test("snippet page is wrapped with CSP and bridge", async () => {
+  const app = makeApp();
+  const s = (await (await app.request("/api/snippets", json({ html: "<p>x</p>" }))).json()) as any;
+  const page = await (await app.request(`/s/${s.id}`)).text();
+  assert.ok(page.includes("Content-Security-Policy"));
+  assert.ok(page.includes("window.sendPrompt"));
+  assert.ok(page.includes("__sideshow"));
+});
+
+test("comments attach to snippets and filter by author/after", async () => {
+  const app = makeApp();
+  const s = (await (
+    await app.request("/api/snippets", json({ html: "<p>x</p>", title: "Sketch" }))
+  ).json()) as any;
+  await app.request("/api/comments", json({ snippet: s.id, text: "love it", author: "user" }));
+  await app.request("/api/comments", json({ snippet: s.id, text: "thanks", author: "claude" }));
+
+  const all = (await (await app.request(`/api/comments?session=${s.sessionId}`)).json()) as any;
+  assert.equal(all.comments.length, 2);
+  assert.equal(all.comments[0].snippetTitle, "Sketch");
+
+  const users = (await (
+    await app.request(`/api/comments?session=${s.sessionId}&author=user`)
+  ).json()) as any;
+  assert.equal(users.comments.length, 1);
+  assert.equal(users.comments[0].text, "love it");
+
+  const later = (await (
+    await app.request(`/api/comments?session=${s.sessionId}&after=${all.lastSeq}`)
+  ).json()) as any;
+  assert.equal(later.comments.length, 0);
+});
+
+test("long-poll resolves when a comment arrives", async () => {
+  const app = makeApp();
+  const s = (await (await app.request("/api/snippets", json({ html: "<p>x</p>" }))).json()) as any;
+  const pending = app.request(`/api/comments?session=${s.sessionId}&wait=5`);
+  setTimeout(() => {
+    app.request("/api/comments", json({ snippet: s.id, text: "feedback!", author: "user" }));
+  }, 50);
+  const start = Date.now();
+  const result = (await (await pending).json()) as any;
+  assert.equal(result.comments.length, 1);
+  assert.equal(result.comments[0].text, "feedback!");
+  assert.ok(Date.now() - start < 4000, "should resolve well before the timeout");
+});
+
+test("deleting a session cascades to snippets and comments", async () => {
+  const app = makeApp();
+  const s = (await (await app.request("/api/snippets", json({ html: "<p>x</p>" }))).json()) as any;
+  await app.request("/api/comments", json({ snippet: s.id, text: "hi" }));
+  const res = await app.request(`/api/sessions/${s.sessionId}`, { method: "DELETE" });
+  assert.equal(res.status, 200);
+  assert.equal((await app.request(`/api/snippets/${s.id}`)).status, 404);
+  const sessions = (await (await app.request("/api/sessions")).json()) as any;
+  assert.equal(sessions.length, 0);
+});
+
+test("rename session", async () => {
+  const app = makeApp();
+  const s = (await (await app.request("/api/snippets", json({ html: "<p>x</p>" }))).json()) as any;
+  const res = await app.request(`/api/sessions/${s.sessionId}`, {
+    ...json({ title: "Auth refactor" }),
+    method: "PATCH",
+  });
+  assert.equal(((await res.json()) as any).title, "Auth refactor");
+});
+
+test("auth token guards mutating routes when configured", async () => {
+  const app = makeApp("secret");
+  const denied = await app.request("/api/snippets", json({ html: "<p>x</p>" }));
+  assert.equal(denied.status, 401);
+  const allowed = await app.request("/api/snippets", {
+    ...json({ html: "<p>x</p>" }),
+    headers: { "content-type": "application/json", authorization: "Bearer secret" },
+  });
+  assert.equal(allowed.status, 201);
+  assert.equal((await app.request("/api/sessions")).status, 200);
+});
+
+test("rejects empty and oversized html", async () => {
+  const app = makeApp();
+  assert.equal((await app.request("/api/snippets", json({ html: "" }))).status, 400);
+  assert.equal(
+    (await app.request("/api/snippets", json({ html: "x".repeat(2 * 1024 * 1024 + 1) }))).status,
+    413,
+  );
+});

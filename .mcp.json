@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sideshow": {
+      "command": "node",
+      "args": ["mcp/server.ts"],
+      "env": {
+        "SIDESHOW_URL": "http://localhost:4242"
+      }
+    }
+  }
+}
