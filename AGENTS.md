@@ -17,13 +17,20 @@ teaches agents to _use_ a running sideshow lives in `guide/AGENT_SETUP.md`
 - `server/app.ts` — runtime-agnostic Hono app: all routes (REST, SSE `/api/events`, long-poll `/api/comments`, snippet renderer `/s/:id`).
 - `server/storage.ts` — `Store` interface + JSON-file implementation. Cloud ports implement `Store` (D1/KV) and reuse `createApp()`.
 - `server/snippetPage.ts` — wraps agent HTML in a themed sandboxed document; contains the CSP allowlist and the postMessage bridge.
+- `server/mcpHttp.ts` — stateless MCP over streamable HTTP, mounted at `/mcp`
+  on every server (local and cloud). Shares flow functions with the REST API.
+- `server/types.ts` — shared data model, no runtime imports (platform-safe).
 - `viewer/index.html` — the whole viewer UI, single file, vanilla JS, no build.
 - `bin/sideshow.js` — zero-dependency CLI. Must stay dependency-free.
 - `mcp/server.ts` — stdio MCP server; a thin client over the HTTP API.
+- `workers/index.ts` — Cloudflare entry: one Durable Object (`SideshowBoard`)
+  runs the whole app; `workers/sqlStore.ts` implements `Store` on DO SQLite.
+- `skills/sideshow/SKILL.md` — installable Claude Code skill for agents
+  _using_ sideshow.
 
 ## Architecture rules
 
-- `server/app.ts` must stay runtime-agnostic (no `node:` imports) so it can run on Cloudflare Workers later. Node-specific wiring belongs in `server/index.ts`.
+- `server/app.ts`, `server/mcpHttp.ts`, `server/events.ts`, `server/snippetPage.ts`, and `server/types.ts` must stay runtime-agnostic (no `node:` imports) — they run on Cloudflare Workers via `tsconfig.workers.json`, which typechecks them against workers types. Node-specific wiring belongs in `server/index.ts` / `server/storage.ts`.
 - TypeScript runs directly on Node ≥22.18 via native type-stripping: erasable syntax only (no enums, no parameter properties), `.ts` extensions in relative imports, no build step. `erasableSyntaxOnly` in tsconfig enforces this.
 - `bin/sideshow.js` uses only Node built-ins — keep it that way; it is the universal integration tier.
 - Snippet iframes are sandboxed without `allow-same-origin`. Never weaken this. WebKit quirk: inside sandboxed iframes, ResizeObserver's initial callback may not fire and `documentElement.scrollHeight` ratchets to viewport height — the bridge reports `body.scrollHeight` on `load` + staggered timers. Don't "simplify" it back.

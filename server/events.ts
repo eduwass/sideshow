@@ -12,13 +12,18 @@ export type FeedEvent =
 
 type Listener = (event: FeedEvent) => void;
 
-const listeners = new Set<Listener>();
+// One bus per app instance. On Cloudflare, each board is a single Durable
+// Object running one app, so in-memory listeners are correct there too —
+// a module-level singleton would leak events across boards sharing an isolate.
+export class EventBus {
+  private listeners = new Set<Listener>();
 
-export function broadcast(event: FeedEvent) {
-  for (const fn of listeners) fn(event);
-}
+  broadcast(event: FeedEvent) {
+    for (const fn of this.listeners) fn(event);
+  }
 
-export function subscribe(fn: Listener) {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
+  subscribe(fn: Listener) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
 }

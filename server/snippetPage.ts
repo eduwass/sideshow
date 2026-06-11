@@ -1,4 +1,4 @@
-import type { Snippet } from "./storage.ts";
+import type { Snippet } from "./types.ts";
 
 // Origins snippets may load external resources from. Mirrors the allowlist
 // agents already know from Claude's inline widget surface.

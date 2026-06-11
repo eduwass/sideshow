@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sideshow",
+  "main": "workers/index.ts",
+  "compatibility_date": "2026-06-01",
+  "rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.md"], "fallthrough": true }],
+  "durable_objects": {
+    "bindings": [{ "name": "BOARD", "class_name": "SideshowBoard" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SideshowBoard"] }],
+  "observability": { "enabled": true },
+}

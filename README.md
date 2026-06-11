@@ -50,14 +50,29 @@ Three tiers, pick what the agent supports:
    sideshow publish sketch.html --title "Cache layout"   # session handled automatically
    sideshow wait                                         # block until the user comments
    ```
-2. **MCP (richer)** — `sideshow mcp` runs a stdio server exposing
-   `publish_snippet`, `update_snippet`, `wait_for_feedback`, `reply_to_user`,
-   `list_snippets`, `get_design_guide`. For Claude Code:
+2. **MCP (richer)** — tools: `publish_snippet`, `update_snippet`,
+   `wait_for_feedback`, `reply_to_user`, `list_snippets`, `get_design_guide`.
+   Two transports, same tools:
    ```sh
+   # stdio (local)
    claude mcp add --scope user sideshow -- npx -y sideshow mcp
+   # streamable HTTP — the server itself speaks MCP at /mcp (local or deployed)
+   claude mcp add --scope user --transport http sideshow http://localhost:4242/mcp
    ```
 3. **HTTP** — `POST /api/snippets`, `PUT /api/snippets/:id`,
    `GET /api/comments?wait=60` (long-poll). See `/guide`.
+
+## How agents learn it
+
+Three surfaces, by agent capability — you rarely need more than one:
+
+- **MCP instructions (automatic)**: any MCP-connected agent receives usage
+  instructions and tool descriptions the moment it connects. Zero setup.
+- **AGENTS.md block**: `curl -s http://localhost:4242/setup >> AGENTS.md`
+  teaches bash-only agents the curl workflow.
+- **Claude Code skill (optional)**: `cp -r skills/sideshow ~/.claude/skills/`
+  installs a skill that triggers when you ask the agent to illustrate or
+  visualize something, with workflow guidance beyond the basics.
 
 ## The model
 
@@ -84,13 +99,41 @@ fragment rules) so snippets look native instead of chaotic.
 - `bin/sideshow.js` — zero-dependency CLI.
 - `mcp/server.ts` — stdio MCP server; a thin client over the HTTP API.
 
-## Cloud path
+## Deploy to the cloud (Cloudflare)
 
-Built local-first, cloud-ready: `createApp()` runs unchanged on Cloudflare
-Workers (swap the JSON store for D1/KV behind the `Store` interface; SSE works
-on Workers). The CLI and MCP server already target a URL — set `SIDESHOW_URL`
-to a deployed origin and `SIDESHOW_TOKEN` for bearer auth (enforced on
-mutating routes when the server sets `SIDESHOW_TOKEN`).
+The same app deploys to Cloudflare Workers, so agents anywhere — SSH boxes,
+CI, your laptop — draw to a surface you can open from any browser:
+
+```sh
+npx wrangler login
+npx wrangler secret put SIDESHOW_TOKEN     # pick a long random token
+npm run deploy                             # → https://sideshow.<you>.workers.dev
+```
+
+Everything requires the token once deployed: open the viewer as
+`https://sideshow.<you>.workers.dev/?key=<token>` (sets a cookie), and give
+agents the environment:
+
+```sh
+export SIDESHOW_URL=https://sideshow.<you>.workers.dev
+export SIDESHOW_TOKEN=<token>
+```
+
+The CLI, stdio MCP, and curl (`-H "Authorization: Bearer $SIDESHOW_TOKEN"`)
+all work unchanged against the deployed URL — local and cloud are the same
+product. Remote agents can also skip the CLI entirely and connect MCP
+directly to the edge:
+
+```sh
+claude mcp add --transport http sideshow https://sideshow.<you>.workers.dev/mcp \
+  --header "Authorization: Bearer $SIDESHOW_TOKEN"
+```
+
+How it works: the entire app runs inside one Durable Object (`workers/`),
+with SQLite-in-DO storage. One DO instance per board means the in-memory
+event bus is authoritative — SSE and long-poll behave exactly like the local
+server. `/guide` and `/setup` are served with the deployed origin substituted
+into every example.
 
 ## Development
 

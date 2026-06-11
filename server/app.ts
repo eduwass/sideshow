@@ -1,18 +1,24 @@
 import { Hono } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
-import { broadcast, subscribe, type FeedEvent } from "./events.ts";
+import { EventBus } from "./events.ts";
+import { registerMcp } from "./mcpHttp.ts";
 import { renderSnippetPage } from "./snippetPage.ts";
-import type { Snippet, Store } from "./storage.ts";
+import type { Comment, Snippet, Store } from "./types.ts";
 
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const MAX_WAIT_SECONDS = 300;
+// Docs and onboarding snippets are written against the local default; serve
+// them with the real origin so a deployed instance shows copy-pasteable URLs.
+const LOCAL_ORIGIN = "http://localhost:4242";
 
 export interface AppOptions {
   store: Store;
   viewerHtml: string;
   guideMarkdown: string;
   setupText: string;
-  // Optional bearer token for mutating routes — unused locally, ready for cloud.
+  // When set (cloud deployments), every route except /guide and /setup
+  // requires it: Authorization bearer, ?key= query, or the cookie it sets.
   authToken?: string;
 }
 
@@ -25,21 +31,163 @@ const snippetMeta = (s: Snippet) => ({
   version: s.version,
 });
 
+export interface CommentWait {
+  sessionId?: string;
+  snippetId?: string;
+  author?: string;
+  afterSeq?: number;
+  waitSeconds: number;
+}
+
 export function createApp({ store, viewerHtml, guideMarkdown, setupText, authToken }: AppOptions) {
   const app = new Hono();
+  const bus = new EventBus();
 
-  app.use("/api/*", async (c, next) => {
-    if (authToken && c.req.method !== "GET") {
-      if (c.req.header("authorization") !== `Bearer ${authToken}`) {
-        return c.json({ error: "unauthorized" }, 401);
-      }
+  // --- shared flows (used by both the REST API and the MCP endpoint) ---
+
+  async function publishSnippet(input: {
+    html: string;
+    title?: string;
+    session?: string;
+    agent?: string;
+    cwd?: string;
+  }): Promise<{ snippet: Snippet } | { error: string; status: 404 | 413 }> {
+    if (input.html.length > MAX_HTML_BYTES) {
+      return { error: `html exceeds ${MAX_HTML_BYTES} bytes`, status: 413 };
     }
-    await next();
+    let sessionId = input.session;
+    if (sessionId && !(await store.getSession(sessionId))) {
+      return { error: `session "${sessionId}" not found`, status: 404 };
+    }
+    if (!sessionId) {
+      const session = await store.createSession({ agent: input.agent ?? "agent", cwd: input.cwd });
+      bus.broadcast({ type: "session-created", id: session.id });
+      sessionId = session.id;
+    }
+    const snippet = await store.createSnippet({
+      sessionId,
+      html: input.html,
+      title: input.title,
+    });
+    if (!snippet) return { error: "session not found", status: 404 };
+    bus.broadcast({ type: "snippet-created", id: snippet.id, sessionId, version: 1 });
+    return { snippet };
+  }
+
+  async function reviseSnippet(
+    id: string,
+    patch: { html?: string; title?: string },
+  ): Promise<{ snippet: Snippet } | { error: string; status: 404 | 413 }> {
+    if (typeof patch.html === "string" && patch.html.length > MAX_HTML_BYTES) {
+      return { error: `html exceeds ${MAX_HTML_BYTES} bytes`, status: 413 };
+    }
+    const snippet = await store.updateSnippet(id, patch);
+    if (!snippet) return { error: "snippet not found", status: 404 };
+    bus.broadcast({
+      type: "snippet-updated",
+      id: snippet.id,
+      sessionId: snippet.sessionId,
+      version: snippet.version,
+    });
+    return { snippet };
+  }
+
+  async function createComment(input: {
+    text: string;
+    snippet?: string;
+    session?: string;
+    author: string;
+  }): Promise<{ comment: Comment } | { error: string; status: 400 | 404 }> {
+    let sessionId = input.session;
+    if (input.snippet) {
+      const snippet = await store.getSnippet(input.snippet);
+      if (!snippet) return { error: "snippet not found", status: 404 };
+      sessionId = snippet.sessionId;
+    }
+    if (!sessionId) return { error: 'provide "snippet" or "session" id', status: 400 };
+    const comment = await store.createComment({
+      sessionId,
+      snippetId: input.snippet,
+      author: input.author,
+      text: input.text.trim(),
+    });
+    if (!comment) return { error: "session not found", status: 404 };
+    bus.broadcast({
+      type: "comment-created",
+      id: comment.id,
+      sessionId: comment.sessionId,
+      snippetId: comment.snippetId,
+      seq: comment.seq,
+    });
+    return { comment };
+  }
+
+  // Long-poll: resolves as soon as a matching comment lands, or at timeout.
+  async function waitForComments(
+    q: CommentWait,
+  ): Promise<{ comments: Comment[]; lastSeq: number }> {
+    const query = { sessionId: q.sessionId, snippetId: q.snippetId, afterSeq: q.afterSeq };
+    const matches = (list: Comment[]) =>
+      q.author ? list.filter((cm) => cm.author === q.author) : list;
+    const wait = Math.min(Math.max(q.waitSeconds, 0), MAX_WAIT_SECONDS);
+
+    let comments = matches(await store.listComments(query));
+    if (comments.length === 0 && wait > 0) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, wait * 1000);
+        const unsubscribe = bus.subscribe((event) => {
+          if (event.type !== "comment-created") return;
+          if (q.sessionId && event.sessionId !== q.sessionId) return;
+          if (q.snippetId && event.snippetId !== q.snippetId) return;
+          done();
+        });
+        function done() {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve();
+        }
+      });
+      comments = matches(await store.listComments(query));
+    }
+    const lastSeq = comments.length > 0 ? comments[comments.length - 1].seq : (q.afterSeq ?? 0);
+    return { comments, lastSeq };
+  }
+
+  // --- auth ---
+
+  app.use("*", async (c, next) => {
+    if (!authToken) return next();
+    const path = new URL(c.req.url).pathname;
+    if (path === "/guide" || path === "/setup") return next();
+
+    const bearer = c.req.header("authorization");
+    if (bearer === `Bearer ${authToken}`) return next();
+    if (getCookie(c, "sideshow_key") === authToken) return next();
+    const key = c.req.query("key");
+    if (key === authToken) {
+      setCookie(c, "sideshow_key", authToken, {
+        httpOnly: true,
+        sameSite: "Lax",
+        secure: new URL(c.req.url).protocol === "https:",
+        maxAge: 60 * 60 * 24 * 90,
+        path: "/",
+      });
+      return next();
+    }
+    if (path.startsWith("/api") || path === "/mcp") {
+      return c.json({ error: "unauthorized — send Authorization: Bearer <token>" }, 401);
+    }
+    return c.text("unauthorized — open this page as /?key=<your token>", 401);
   });
 
-  app.get("/", (c) => c.html(viewerHtml));
-  app.get("/guide", (c) => c.text(guideMarkdown));
-  app.get("/setup", (c) => c.text(setupText));
+  // --- pages and docs ---
+
+  const withOrigin = (text: string, c: { req: { url: string } }) =>
+    text.replaceAll(LOCAL_ORIGIN, new URL(c.req.url).origin);
+
+  app.get("/", (c) => c.html(withOrigin(viewerHtml, c)));
+  app.get("/guide", (c) => c.text(withOrigin(guideMarkdown, c)));
+  app.get("/setup", (c) => c.text(withOrigin(setupText, c)));
 
   // --- sessions ---
 
@@ -57,7 +205,7 @@ export function createApp({ store, viewerHtml, guideMarkdown, setupText, authTok
       title: typeof body.title === "string" ? body.title : undefined,
       cwd: typeof body.cwd === "string" ? body.cwd : undefined,
     });
-    broadcast({ type: "session-created", id: session.id });
+    bus.broadcast({ type: "session-created", id: session.id });
     return c.json(session, 201);
   });
 
@@ -68,14 +216,14 @@ export function createApp({ store, viewerHtml, guideMarkdown, setupText, authTok
     }
     const session = await store.renameSession(c.req.param("id"), body.title);
     if (!session) return c.json({ error: "session not found" }, 404);
-    broadcast({ type: "session-updated", id: session.id });
+    bus.broadcast({ type: "session-updated", id: session.id });
     return c.json(session);
   });
 
   app.delete("/api/sessions/:id", async (c) => {
     const id = c.req.param("id");
     if (!(await store.removeSession(id))) return c.json({ error: "session not found" }, 404);
-    broadcast({ type: "session-deleted", id });
+    bus.broadcast({ type: "session-deleted", id });
     return c.json({ ok: true });
   });
 
@@ -94,63 +242,40 @@ export function createApp({ store, viewerHtml, guideMarkdown, setupText, authTok
     return c.json(snippet);
   });
 
-  // Accepts either an existing session id, or agent/title fields to
+  // Accepts either an existing session id, or agent/cwd fields to
   // auto-create a session — so a bare `curl` one-liner works with no ceremony.
   app.post("/api/snippets", async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.html !== "string" || !body.html.trim()) {
       return c.json({ error: 'body must include non-empty "html" string' }, 400);
     }
-    if (body.html.length > MAX_HTML_BYTES) {
-      return c.json({ error: `html exceeds ${MAX_HTML_BYTES} bytes` }, 413);
-    }
-    let sessionId: string | undefined = typeof body.session === "string" ? body.session : undefined;
-    if (sessionId && !(await store.getSession(sessionId))) {
-      return c.json({ error: `session "${sessionId}" not found` }, 404);
-    }
-    if (!sessionId) {
-      const session = await store.createSession({
-        agent: typeof body.agent === "string" ? body.agent : "agent",
-        cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-      });
-      broadcast({ type: "session-created", id: session.id });
-      sessionId = session.id;
-    }
-    const snippet = await store.createSnippet({
-      sessionId,
+    const result = await publishSnippet({
       html: body.html,
       title: typeof body.title === "string" ? body.title : undefined,
+      session: typeof body.session === "string" ? body.session : undefined,
+      agent: typeof body.agent === "string" ? body.agent : undefined,
+      cwd: typeof body.cwd === "string" ? body.cwd : undefined,
     });
-    if (!snippet) return c.json({ error: "session disappeared" }, 500);
-    broadcast({ type: "snippet-created", id: snippet.id, sessionId, version: 1 });
-    return c.json(snippetMeta(snippet), 201);
+    if ("error" in result) return c.json({ error: result.error }, result.status);
+    return c.json(snippetMeta(result.snippet), 201);
   });
 
   app.put("/api/snippets/:id", async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body) return c.json({ error: "invalid JSON body" }, 400);
-    if (typeof body.html === "string" && body.html.length > MAX_HTML_BYTES) {
-      return c.json({ error: `html exceeds ${MAX_HTML_BYTES} bytes` }, 413);
-    }
-    const snippet = await store.updateSnippet(c.req.param("id"), {
+    const result = await reviseSnippet(c.req.param("id"), {
       html: typeof body.html === "string" ? body.html : undefined,
       title: typeof body.title === "string" ? body.title : undefined,
     });
-    if (!snippet) return c.json({ error: "snippet not found" }, 404);
-    broadcast({
-      type: "snippet-updated",
-      id: snippet.id,
-      sessionId: snippet.sessionId,
-      version: snippet.version,
-    });
-    return c.json(snippetMeta(snippet));
+    if ("error" in result) return c.json({ error: result.error }, result.status);
+    return c.json(snippetMeta(result.snippet));
   });
 
   app.delete("/api/snippets/:id", async (c) => {
     const snippet = await store.getSnippet(c.req.param("id"));
     if (!snippet) return c.json({ error: "snippet not found" }, 404);
     await store.removeSnippet(snippet.id);
-    broadcast({ type: "snippet-deleted", id: snippet.id, sessionId: snippet.sessionId });
+    bus.broadcast({ type: "snippet-deleted", id: snippet.id, sessionId: snippet.sessionId });
     return c.json({ ok: true });
   });
 
@@ -161,65 +286,27 @@ export function createApp({ store, viewerHtml, guideMarkdown, setupText, authTok
     if (!body || typeof body.text !== "string" || !body.text.trim()) {
       return c.json({ error: 'body must include non-empty "text" string' }, 400);
     }
-    let sessionId: string | undefined = typeof body.session === "string" ? body.session : undefined;
-    const snippetId: string | undefined =
-      typeof body.snippet === "string" ? body.snippet : undefined;
-    if (snippetId) {
-      const snippet = await store.getSnippet(snippetId);
-      if (!snippet) return c.json({ error: "snippet not found" }, 404);
-      sessionId = snippet.sessionId;
-    }
-    if (!sessionId) return c.json({ error: 'provide "snippet" or "session" id' }, 400);
-    const comment = await store.createComment({
-      sessionId,
-      snippetId,
+    const result = await createComment({
+      text: body.text,
+      snippet: typeof body.snippet === "string" ? body.snippet : undefined,
+      session: typeof body.session === "string" ? body.session : undefined,
       author: typeof body.author === "string" ? body.author : "user",
-      text: body.text.trim(),
     });
-    if (!comment) return c.json({ error: "session not found" }, 404);
-    broadcast({
-      type: "comment-created",
-      id: comment.id,
-      sessionId: comment.sessionId,
-      snippetId: comment.snippetId,
-      seq: comment.seq,
-    });
-    return c.json(comment, 201);
+    if ("error" in result) return c.json({ error: result.error }, result.status);
+    return c.json(result.comment, 201);
   });
 
   // Long-poll friendly: ?wait=N holds the request open up to N seconds until
   // a matching comment arrives. This is how terminal agents block on feedback.
   app.get("/api/comments", async (c) => {
-    const sessionId = c.req.query("session");
-    const snippetId = c.req.query("snippet");
-    const author = c.req.query("author");
-    const afterSeq = c.req.query("after") ? Number(c.req.query("after")) : undefined;
-    const wait = Math.min(Number(c.req.query("wait") ?? 0) || 0, MAX_WAIT_SECONDS);
-
-    const query = { sessionId, snippetId, afterSeq };
-    const matches = (list: Awaited<ReturnType<Store["listComments"]>>) =>
-      author ? list.filter((cm) => cm.author === author) : list;
-
-    let comments = matches(await store.listComments(query));
-    if (comments.length === 0 && wait > 0) {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(done, wait * 1000);
-        const unsubscribe = subscribe((event) => {
-          if (event.type !== "comment-created") return;
-          if (sessionId && event.sessionId !== sessionId) return;
-          if (snippetId && event.snippetId !== snippetId) return;
-          done();
-        });
-        function done() {
-          clearTimeout(timer);
-          unsubscribe();
-          resolve();
-        }
-      });
-      comments = matches(await store.listComments(query));
-    }
-    const lastSeq = comments.length > 0 ? comments[comments.length - 1].seq : (afterSeq ?? 0);
-    return c.json({ comments, lastSeq });
+    const result = await waitForComments({
+      sessionId: c.req.query("session"),
+      snippetId: c.req.query("snippet"),
+      author: c.req.query("author"),
+      afterSeq: c.req.query("after") ? Number(c.req.query("after")) : undefined,
+      waitSeconds: Number(c.req.query("wait") ?? 0) || 0,
+    });
+    return c.json(result);
   });
 
   // --- rendering ---
@@ -242,9 +329,9 @@ export function createApp({ store, viewerHtml, guideMarkdown, setupText, authTok
 
   app.get("/api/events", (c) =>
     streamSSE(c, async (stream) => {
-      const queue: FeedEvent[] = [];
+      const queue: Parameters<Parameters<EventBus["subscribe"]>[0]>[0][] = [];
       let wake: (() => void) | null = null;
-      const unsubscribe = subscribe((event) => {
+      const unsubscribe = bus.subscribe((event) => {
         queue.push(event);
         wake?.();
       });
@@ -272,6 +359,17 @@ export function createApp({ store, viewerHtml, guideMarkdown, setupText, authTok
       }
     }),
   );
+
+  // --- MCP over streamable HTTP (works locally and deployed) ---
+
+  registerMcp(app, {
+    store,
+    publishSnippet,
+    reviseSnippet,
+    createComment,
+    waitForComments,
+    guide: guideMarkdown,
+  });
 
   return app;
 }

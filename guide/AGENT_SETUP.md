@@ -30,3 +30,8 @@ The user can comment on your snippets in their browser. Check for feedback
 If the `sideshow` CLI is installed, these are equivalent and easier:
 `sideshow publish file.html --title "..."`, `sideshow wait`, `sideshow guide`
 (session handling is automatic).
+
+If this surface is a deployed instance that requires a token, add
+`-H "Authorization: Bearer $SIDESHOW_TOKEN"` to every curl call — or set
+`SIDESHOW_URL` and `SIDESHOW_TOKEN` in your environment and use the CLI,
+which sends them automatically.

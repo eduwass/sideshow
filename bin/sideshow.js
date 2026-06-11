@@ -7,7 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const BASE = process.env.SIDESHOW_URL ?? "http://localhost:4242";
+const BASE = (process.env.SIDESHOW_URL ?? "http://localhost:4242").replace(/\/$/, "");
+const TOKEN = process.env.SIDESHOW_TOKEN;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const HELP = `sideshow — a live visual surface for terminal coding agents
@@ -35,7 +36,9 @@ usage:
   sideshow mcp                            run the stdio MCP server (for agent configs)
 
 environment:
-  SIDESHOW_URL      server base URL (default http://localhost:4242)
+  SIDESHOW_URL      server base URL (default http://localhost:4242; set to a
+                    deployed instance, e.g. https://sideshow.you.workers.dev)
+  SIDESHOW_TOKEN    bearer token for a deployed instance
   SIDESHOW_SESSION  fixed session id (overrides auto-detection)
   SIDESHOW_AGENT    agent name used when creating sessions
 `;
@@ -50,7 +53,11 @@ async function api(path, init = {}) {
   try {
     res = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { "content-type": "application/json", ...init.headers },
+      headers: {
+        "content-type": "application/json",
+        ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}),
+        ...init.headers,
+      },
     });
   } catch {
     fail(`server not reachable at ${BASE} — start it with: sideshow serve`);
@@ -121,7 +128,9 @@ async function resolveSession(flags, { create = false } = {}) {
   if (process.env.SIDESHOW_SESSION) return process.env.SIDESHOW_SESSION;
   const state = readState();
   if (state.session && !flags["new-session"]) {
-    const ok = await fetch(`${BASE}/api/sessions/${state.session}/snippets`).then(
+    const ok = await fetch(`${BASE}/api/sessions/${state.session}/snippets`, {
+      headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
+    }).then(
       (r) => r.ok,
       () => false,
     );

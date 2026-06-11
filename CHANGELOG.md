@@ -19,6 +19,15 @@ All notable user-visible changes to this project are documented in this file.
   block at `/setup`.
 - Sandboxed snippet rendering (`sandbox="allow-scripts"`, CSP CDN allowlist)
   with light/dark theme CSS variables and a `sendPrompt`/`openLink` bridge.
+- Cloudflare Workers deployment (`npm run deploy`): the whole app runs in a
+  Durable Object with SQLite storage; local and cloud are the same product
+  behind `SIDESHOW_URL` + `SIDESHOW_TOKEN`.
+- Built-in MCP over streamable HTTP at `/mcp` on every server (local and
+  deployed) — agents can connect without any local process.
+- Token auth for deployed instances: bearer header for APIs, `/?key=<token>`
+  cookie flow for the viewer; `/guide` and `/setup` stay public.
+- Claude Code skill at `skills/sideshow/` teaching agents the publish →
+  feedback → iterate workflow.
 
 ### Changed
 

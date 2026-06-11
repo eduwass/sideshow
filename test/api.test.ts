@@ -160,7 +160,101 @@ test("auth token guards mutating routes when configured", async () => {
     headers: { "content-type": "application/json", authorization: "Bearer secret" },
   });
   assert.equal(allowed.status, 201);
-  assert.equal((await app.request("/api/sessions")).status, 200);
+  // full surface is guarded, including reads and the viewer
+  assert.equal((await app.request("/api/sessions")).status, 401);
+  assert.equal((await app.request("/")).status, 401);
+  // docs stay open
+  assert.equal((await app.request("/guide")).status, 200);
+  assert.equal((await app.request("/setup")).status, 200);
+  // ?key= grants access and sets a cookie for subsequent requests
+  const keyed = await app.request("/?key=secret");
+  assert.equal(keyed.status, 200);
+  const cookie = keyed.headers.get("set-cookie") ?? "";
+  assert.ok(cookie.includes("sideshow_key=secret"));
+  const viaCookie = await app.request("/api/sessions", {
+    headers: { cookie: "sideshow_key=secret" },
+  });
+  assert.equal(viaCookie.status, 200);
+});
+
+const mcpCall = (id: number, method: string, params?: unknown) =>
+  json({ jsonrpc: "2.0", id, method, params });
+
+test("mcp endpoint: initialize, tools/list, publish round trip", async () => {
+  const app = makeApp();
+
+  const init = (await (
+    await app.request("/mcp", mcpCall(1, "initialize", { protocolVersion: "2025-03-26" }))
+  ).json()) as any;
+  assert.equal(init.result.serverInfo.name, "sideshow");
+  assert.ok(init.result.instructions.length > 0);
+
+  const list = (await (await app.request("/mcp", mcpCall(2, "tools/list"))).json()) as any;
+  const names = list.result.tools.map((t: any) => t.name);
+  assert.ok(names.includes("publish_snippet"));
+  assert.ok(names.includes("wait_for_feedback"));
+
+  const published = (await (
+    await app.request(
+      "/mcp",
+      mcpCall(3, "tools/call", {
+        name: "publish_snippet",
+        arguments: { title: "Via MCP", html: "<p>mcp</p>", agent: "test-agent" },
+      }),
+    )
+  ).json()) as any;
+  const payload = JSON.parse(published.result.content[0].text);
+  assert.ok(payload.id);
+  assert.ok(payload.sessionId);
+  assert.ok(payload.url.includes(`/s/${payload.id}`));
+
+  // session continuity: second publish into the returned session
+  const second = (await (
+    await app.request(
+      "/mcp",
+      mcpCall(4, "tools/call", {
+        name: "publish_snippet",
+        arguments: { title: "Second", html: "<p>2</p>", session: payload.sessionId },
+      }),
+    )
+  ).json()) as any;
+  assert.equal(JSON.parse(second.result.content[0].text).sessionId, payload.sessionId);
+
+  // feedback loop through the mcp tool
+  await app.request("/api/comments", json({ snippet: payload.id, text: "nice", author: "user" }));
+  const feedback = (await (
+    await app.request(
+      "/mcp",
+      mcpCall(5, "tools/call", {
+        name: "wait_for_feedback",
+        arguments: { session: payload.sessionId, timeoutSeconds: 0 },
+      }),
+    )
+  ).json()) as any;
+  const fb = JSON.parse(feedback.result.content[0].text);
+  assert.equal(fb.comments.length, 1);
+  assert.equal(fb.comments[0].text, "nice");
+  assert.ok(fb.lastSeq > 0);
+});
+
+test("mcp endpoint: unknown method and unknown tool", async () => {
+  const app = makeApp();
+  const bad = (await (await app.request("/mcp", mcpCall(1, "resources/list"))).json()) as any;
+  assert.equal(bad.error.code, -32601);
+  const badTool = (await (
+    await app.request("/mcp", mcpCall(2, "tools/call", { name: "nope", arguments: {} }))
+  ).json()) as any;
+  assert.equal(badTool.result.isError, true);
+});
+
+test("mcp endpoint requires bearer when token configured", async () => {
+  const app = makeApp("secret");
+  assert.equal((await app.request("/mcp", mcpCall(1, "tools/list"))).status, 401);
+  const ok = await app.request("/mcp", {
+    ...mcpCall(2, "tools/list"),
+    headers: { "content-type": "application/json", authorization: "Bearer secret" },
+  });
+  assert.equal(ok.status, 200);
 });
 
 test("rejects empty and oversized html", async () => {

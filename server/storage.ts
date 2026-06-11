@@ -1,94 +1,20 @@
-import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import {
+  type Comment,
+  type CommentQuery,
+  type CreateCommentInput,
+  type CreateSessionInput,
+  type CreateSnippetInput,
+  HISTORY_LIMIT,
+  newId,
+  type Session,
+  type Snippet,
+  type Store,
+  type UpdateSnippetInput,
+} from "./types.ts";
 
-export interface Session {
-  id: string;
-  agent: string;
-  title: string | null;
-  cwd: string | null;
-  createdAt: string;
-  lastActiveAt: string;
-}
-
-export interface SnippetVersion {
-  version: number;
-  title: string;
-  html: string;
-  at: string;
-}
-
-export interface Snippet {
-  id: string;
-  sessionId: string;
-  title: string;
-  html: string;
-  createdAt: string;
-  updatedAt: string;
-  version: number;
-  history: SnippetVersion[];
-}
-
-export interface Comment {
-  id: string;
-  seq: number;
-  sessionId: string;
-  snippetId: string | null;
-  snippetTitle: string | null;
-  author: string;
-  text: string;
-  createdAt: string;
-}
-
-export interface CreateSessionInput {
-  agent: string;
-  title?: string;
-  cwd?: string;
-}
-
-export interface CreateSnippetInput {
-  sessionId: string;
-  title?: string;
-  html: string;
-}
-
-export interface UpdateSnippetInput {
-  title?: string;
-  html?: string;
-}
-
-export interface CreateCommentInput {
-  sessionId: string;
-  snippetId?: string;
-  author: string;
-  text: string;
-}
-
-export interface CommentQuery {
-  sessionId?: string;
-  snippetId?: string;
-  afterSeq?: number;
-}
-
-// Storage interface — implementations: JsonFileStore (local), D1/KV (cloud, later).
-export interface Store {
-  listSessions(): Promise<Session[]>;
-  getSession(id: string): Promise<Session | null>;
-  createSession(input: CreateSessionInput): Promise<Session>;
-  renameSession(id: string, title: string): Promise<Session | null>;
-  removeSession(id: string): Promise<boolean>;
-
-  listSnippets(sessionId?: string): Promise<Snippet[]>;
-  getSnippet(id: string): Promise<Snippet | null>;
-  createSnippet(input: CreateSnippetInput): Promise<Snippet | null>;
-  updateSnippet(id: string, patch: UpdateSnippetInput): Promise<Snippet | null>;
-  removeSnippet(id: string): Promise<boolean>;
-
-  listComments(query: CommentQuery): Promise<Comment[]>;
-  createComment(input: CreateCommentInput): Promise<Comment | null>;
-}
-
-const HISTORY_LIMIT = 20;
+export type * from "./types.ts";
 
 interface FileShape {
   sessions: Session[];
@@ -96,8 +22,6 @@ interface FileShape {
   comments: Comment[];
   lastSeq: number;
 }
-
-const newId = () => randomUUID().split("-")[0];
 
 export class JsonFileStore implements Store {
   private sessions = new Map<string, Session>();
