@@ -38,6 +38,9 @@ curl -s http://localhost:4242/setup >> AGENTS.md
 That block teaches any agent with a shell tool (pi, opencode, amp, codex,
 Claude Code) how to publish snippets and poll for your comments using curl.
 
+No agent handy? `npx sideshow demo` seeds two example sessions so you can
+look around the viewer.
+
 ## Connecting agents
 
 Use whichever the agent supports:

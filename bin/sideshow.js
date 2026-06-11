@@ -31,6 +31,7 @@ usage:
       --author <name>   defaults to agent name
   sideshow list [--session <id>|--all]    list snippets
   sideshow sessions                       list sessions
+  sideshow demo                           seed two example sessions to explore the viewer
   sideshow guide                          print the design contract for snippets
   sideshow setup                          print the AGENTS.md integration block
   sideshow mcp                            run the stdio MCP server (for agent configs)
@@ -318,6 +319,37 @@ const commands = {
 
   async sessions() {
     out(await api("/api/sessions"));
+  },
+
+  async demo() {
+    const { DEMO_SESSIONS } = await import("./demoData.js");
+    for (const demo of DEMO_SESSIONS) {
+      const session = await api("/api/sessions", {
+        method: "POST",
+        body: JSON.stringify({ agent: demo.agent, title: demo.title }),
+      });
+      for (const snip of demo.snippets) {
+        const snippet = await api("/api/snippets", {
+          method: "POST",
+          body: JSON.stringify({ session: session.id, title: snip.title, html: snip.html }),
+        });
+        for (const step of snip.followups ?? []) {
+          if (step.update) {
+            await api(`/api/snippets/${snippet.id}`, {
+              method: "PUT",
+              body: JSON.stringify(step.update),
+            });
+          }
+          if (step.comment) {
+            await api("/api/comments", {
+              method: "POST",
+              body: JSON.stringify({ snippet: snippet.id, ...step.comment }),
+            });
+          }
+        }
+      }
+    }
+    console.log(`Seeded ${DEMO_SESSIONS.length} demo sessions — open ${BASE} to look around.`);
   },
 
   async guide() {
