@@ -11,15 +11,15 @@
     "mcp",
     "visualization"
   ],
-  "homepage": "https://github.com/benvinegar/sideshow#readme",
+  "homepage": "https://github.com/modem-dev/sideshow#readme",
   "bugs": {
-    "url": "https://github.com/benvinegar/sideshow/issues"
+    "url": "https://github.com/modem-dev/sideshow/issues"
   },
   "license": "MIT",
   "author": "Ben Vinegar",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/benvinegar/sideshow.git"
+    "url": "git+https://github.com/modem-dev/sideshow.git"
   },
   "bin": {
     "sideshow": "bin/sideshow.js"

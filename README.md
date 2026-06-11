@@ -1,6 +1,6 @@
 # sideshow
 
-[![CI](https://github.com/benvinegar/sideshow/actions/workflows/ci.yml/badge.svg)](https://github.com/benvinegar/sideshow/actions/workflows/ci.yml)
+[![CI](https://github.com/modem-dev/sideshow/actions/workflows/ci.yml/badge.svg)](https://github.com/modem-dev/sideshow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A live visual surface for terminal coding agents.
