@@ -1,11 +1,15 @@
 import { serve } from "@hono/node-server";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "./app.ts";
 import { JsonFileStore } from "./storage.ts";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+// Source layout puts this file at server/index.ts; the published package runs
+// the compiled copy at dist/server/index.js. viewer/ and guide/ live at the
+// package root either way.
+let root = join(dirname(fileURLToPath(import.meta.url)), "..");
+if (basename(root) === "dist") root = join(root, "..");
 
 const [viewerHtml, guideMarkdown, setupText] = await Promise.all([
   readFile(join(root, "viewer", "index.html"), "utf8"),

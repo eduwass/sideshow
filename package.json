@@ -26,8 +26,7 @@
   },
   "files": [
     "bin/",
-    "server/",
-    "mcp/",
+    "dist/",
     "viewer/",
     "guide/"
   ],
@@ -42,6 +41,8 @@
     "lint": "oxlint . --deny-warnings",
     "lint:fix": "oxlint . --fix",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "prepare": "simple-git-hooks"
   },
   "dependencies": {

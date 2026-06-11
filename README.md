@@ -50,11 +50,11 @@ Three tiers, pick what the agent supports:
    sideshow publish sketch.html --title "Cache layout"   # session handled automatically
    sideshow wait                                         # block until the user comments
    ```
-2. **MCP (richer)** — `mcp/server.ts` exposes `publish_snippet`,
-   `update_snippet`, `wait_for_feedback`, `reply_to_user`, `list_snippets`,
-   `get_design_guide` over stdio. For Claude Code:
+2. **MCP (richer)** — `sideshow mcp` runs a stdio server exposing
+   `publish_snippet`, `update_snippet`, `wait_for_feedback`, `reply_to_user`,
+   `list_snippets`, `get_design_guide`. For Claude Code:
    ```sh
-   claude mcp add --scope user sideshow -- node /path/to/sideshow/mcp/server.ts
+   claude mcp add --scope user sideshow -- npx -y sideshow mcp
    ```
 3. **HTTP** — `POST /api/snippets`, `PUT /api/snippets/:id`,
    `GET /api/comments?wait=60` (long-poll). See `/guide`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ usage:
   sideshow sessions                       list sessions
   sideshow guide                          print the design contract for snippets
   sideshow setup                          print the AGENTS.md integration block
+  sideshow mcp                            run the stdio MCP server (for agent configs)
 
 environment:
   SIDESHOW_URL      server base URL (default http://localhost:4242)
@@ -156,6 +157,14 @@ function out(value) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 
+// Development checkouts run TypeScript directly (Node strips types), but Node
+// refuses to type-strip files under node_modules — installed packages ship
+// compiled JS in dist/ (built on prepack) and must use it.
+function entrypoint(...parts) {
+  const built = join(ROOT, "dist", ...parts).replace(/\.ts$/, ".js");
+  return existsSync(built) ? built : join(ROOT, ...parts);
+}
+
 const commands = {
   async serve() {
     const { values: flags } = parseArgs({
@@ -163,7 +172,7 @@ const commands = {
       options: { port: { type: "string" }, open: { type: "boolean" } },
     });
     const port = flags.port ?? process.env.PORT ?? "4242";
-    const child = spawn(process.execPath, [join(ROOT, "server", "index.ts")], {
+    const child = spawn(process.execPath, [entrypoint("server", "index.ts")], {
       stdio: "inherit",
       env: { ...process.env, PORT: port },
     });
@@ -171,6 +180,14 @@ const commands = {
       const opener = process.platform === "darwin" ? "open" : "xdg-open";
       setTimeout(() => spawn(opener, [`http://localhost:${port}`], { stdio: "ignore" }), 700);
     }
+    child.on("exit", (code) => process.exit(code ?? 0));
+  },
+
+  async mcp() {
+    const child = spawn(process.execPath, [entrypoint("mcp", "server.ts")], {
+      stdio: "inherit",
+      env: process.env,
+    });
     child.on("exit", (code) => process.exit(code ?? 0));
   },
 
