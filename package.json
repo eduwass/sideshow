@@ -71,6 +71,9 @@
     "*.{ts,js,mjs,cjs}": [
       "oxfmt --write",
       "oxlint --deny-warnings"
+    ],
+    "*.{md,html,json,jsonc}": [
+      "oxfmt --write"
     ]
   },
   "engines": {
