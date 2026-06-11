@@ -126,6 +126,9 @@ export function runStoreContract(name: string, makeStore: () => Store | Promise<
       html: "<p>v1</p>",
     });
     assert.ok(snippet);
+    // JsonFileStore mutates the object it returned from createSnippet, so
+    // capture the pre-update timestamp now
+    const v1UpdatedAt = snippet.updatedAt;
 
     const updated = await store.updateSnippet(snippet.id, { html: "<p>v2</p>" });
     assert.equal(updated?.version, 2);
@@ -136,7 +139,7 @@ export function runStoreContract(name: string, makeStore: () => Store | Promise<
       version: 1,
       title: "T",
       html: "<p>v1</p>",
-      at: snippet.updatedAt,
+      at: v1UpdatedAt,
     });
 
     // title-only patch keeps html; blank title keeps the old title
