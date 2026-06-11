@@ -12,15 +12,14 @@ it profiles. Snippets appear live in your browser, grouped by agent session,
 and you can comment on any of them — feedback flows straight back to the agent
 in its terminal.
 
-```
-agent (terminal) ──publish──►  ┌───────────────────────────┐
-                               │  sideshow  · live feed     │
-agent ◄──wait for feedback──   │  ┌─────────────────────┐  │
-                               │  │  snippet (sandboxed) │  │
-                               │  │  💬 your comments    │  │
-                               │  └─────────────────────┘  │
-                               └───────────────────────────┘
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/sideshow-dark.png">
+  <img alt="The sideshow viewer: agent sessions in a sidebar, a published JWT-flow diagram with a comment thread between the user and claude-code, and an interactive backoff explainer below" src="docs/sideshow-light.png">
+</picture>
+
+*An agent published a sequence diagram while explaining an auth refactor; the
+user asked a question under it in the browser; the agent answered in the
+thread and revised the snippet — all without leaving the terminal.*
 
 ## Quick start
 
