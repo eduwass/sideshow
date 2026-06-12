@@ -4,6 +4,8 @@ All notable user-visible changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-12
+
 ### Added
 
 - A session thread at the bottom of each session in the viewer: a composer
