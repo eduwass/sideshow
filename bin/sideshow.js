@@ -174,6 +174,28 @@ function out(value) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 
+// Subcommand flag parsing. parseArgs is strict, so without this --help (or
+// any typo) throws a raw stack trace; instead --help/-h prints usage and
+// exits 0, and an unknown option fails with a one-line hint.
+function parse(config = {}) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      ...config,
+      options: { ...config.options, help: { type: "boolean", short: "h" } },
+    });
+  } catch (err) {
+    if (!String(err?.code).startsWith("ERR_PARSE_ARGS")) throw err;
+    fail(`${err.message.split(". ")[0]} — run "sideshow help"`);
+  }
+  if (parsed.values.help) {
+    console.log(HELP);
+    process.exit(0);
+  }
+  return parsed;
+}
+
 // Development checkouts run TypeScript directly (Node strips types), but Node
 // refuses to type-strip files under node_modules — installed packages ship
 // compiled JS in dist/ (built on prepack) and must use it.
@@ -184,8 +206,7 @@ function entrypoint(...parts) {
 
 const commands = {
   async serve() {
-    const { values: flags } = parseArgs({
-      args: rest,
+    const { values: flags } = parse({
       options: { port: { type: "string" }, open: { type: "boolean" } },
     });
     const port = flags.port ?? process.env.PORT ?? "4242";
@@ -201,6 +222,7 @@ const commands = {
   },
 
   async mcp() {
+    parse();
     const child = spawn(process.execPath, [entrypoint("mcp", "server.ts")], {
       stdio: "inherit",
       env: process.env,
@@ -209,8 +231,7 @@ const commands = {
   },
 
   async publish() {
-    const { values: flags, positionals } = parseArgs({
-      args: rest,
+    const { values: flags, positionals } = parse({
       allowPositionals: true,
       options: {
         title: { type: "string" },
@@ -235,8 +256,7 @@ const commands = {
   },
 
   async update() {
-    const { values: flags, positionals } = parseArgs({
-      args: rest,
+    const { values: flags, positionals } = parse({
       allowPositionals: true,
       options: { title: { type: "string" } },
     });
@@ -251,8 +271,7 @@ const commands = {
   },
 
   async wait() {
-    const { values: flags } = parseArgs({
-      args: rest,
+    const { values: flags } = parse({
       options: {
         session: { type: "string" },
         timeout: { type: "string" },
@@ -285,8 +304,7 @@ const commands = {
   },
 
   async comment() {
-    const { values: flags, positionals } = parseArgs({
-      args: rest,
+    const { values: flags, positionals } = parse({
       allowPositionals: true,
       options: {
         snippet: { type: "string" },
@@ -313,8 +331,7 @@ const commands = {
   },
 
   async list() {
-    const { values: flags } = parseArgs({
-      args: rest,
+    const { values: flags } = parse({
       options: { session: { type: "string" }, all: { type: "boolean" } },
     });
     if (flags.all) {
@@ -331,10 +348,12 @@ const commands = {
   },
 
   async sessions() {
+    parse();
     out(await api("/api/sessions"));
   },
 
   async demo() {
+    parse();
     const { DEMO_SESSIONS } = await import("./demoData.js");
     for (const demo of DEMO_SESSIONS) {
       const session = await api("/api/sessions", {
@@ -366,10 +385,12 @@ const commands = {
   },
 
   async guide() {
+    parse();
     console.log(await fetchTextWithFallback("/guide", join(ROOT, "guide", "DESIGN_GUIDE.md")));
   },
 
   async setup() {
+    parse();
     console.log(await fetchTextWithFallback("/setup", join(ROOT, "guide", "AGENT_SETUP.md")));
   },
 };
