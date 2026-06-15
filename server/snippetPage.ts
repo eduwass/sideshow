@@ -176,6 +176,15 @@ document.addEventListener('click', function (e) {
   var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
   if (a && /^https?:/.test(a.href)) { e.preventDefault(); window.openLink(a.href); }
 });
+// Cmd+Option+Up/Down switches sessions in the sidebar, but keydowns fire in
+// whichever document holds focus — once the user clicks into a snippet, this
+// sandboxed iframe swallows them. Forward just that combo to the host.
+document.addEventListener('keydown', function (e) {
+  if (!e.metaKey || !e.altKey || e.ctrlKey || e.shiftKey) return;
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  parent.postMessage({ __sideshow: true, type: 'switch-session', key: e.key }, '*');
+});
 var __lastH = 0;
 function __report() {
   var h = document.body
