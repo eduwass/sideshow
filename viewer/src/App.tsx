@@ -204,8 +204,15 @@ async function onBridgeMessage(ev: MessageEvent) {
     height?: number;
     text?: unknown;
     url?: string;
+    key?: string;
   } | null;
   if (!d || !d.__sideshow) return;
+  // A snippet iframe forwarded the session-switch shortcut because focus was
+  // inside it (see server/snippetPage.ts). Mirror the parent keydown handler.
+  if (d.type === "switch-session") {
+    void selectAdjacent(d.key === "ArrowUp" ? -1 : 1);
+    return;
+  }
   let sourceId: string | null = null;
   let sourceFrame: HTMLIFrameElement | null = null;
   for (const [id, { iframe }] of cardEls) {
