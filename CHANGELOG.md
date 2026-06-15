@@ -2,7 +2,7 @@
 
 All notable user-visible changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.4.0] - 2026-06-15
 
 ### Added
 
@@ -16,6 +16,9 @@ All notable user-visible changes to this project are documented in this file.
   lives server-side at `/api/version` (npm registry + GitHub release notes),
   is cached for six hours, and fails silently — offline costs nothing but the
   absence of the notice.
+- The CLI now runs on Windows: session detection walks the process tree with a
+  single PowerShell call instead of `ps`, and `sideshow serve --open` launches
+  the browser via `cmd /c start`. macOS and Linux are unchanged.
 
 ## [0.3.0] - 2026-06-12
 
