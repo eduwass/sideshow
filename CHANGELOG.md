@@ -45,6 +45,11 @@ All notable user-visible changes to this project are documented in this file.
 
 ### Fixed
 
+- The viewer no longer renders a part whose kind it doesn't recognize as a
+  broken diff ("Couldn't render diff — No diff content"). An unknown kind —
+  what a long-open browser tab sees after a new part type ships — now shows a
+  neutral "refresh sideshow to update the viewer" hint, and `diff` is dispatched
+  explicitly rather than as the catch-all.
 - Malformed `POST`/`PUT /api/surfaces` part payloads are now rejected before
   they reach storage, instead of being saved and failing later in the viewer.
 - `sideshow-term` can now be packaged and installed standalone: its server
