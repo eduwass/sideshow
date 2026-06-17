@@ -47,6 +47,24 @@ All notable user-visible changes to this project are documented in this file.
   dedupe to one blob, and an asset lives as long as any surface references it
   (even across sessions), so a referenced upload is never lost to a session
   delete. Capped at 5 MB each.
+- A copy button on each posted comment puts an agent-ready paste block on the
+  clipboard (surface title + id + the comment), for handing a comment straight
+  to a terminal agent.
+- `sideshow watch` streams user comments to stdout one per line, re-arming the
+  long-poll forever and waiting for the first publish if no session exists yet.
+  It rides the shared server-side agent cursor (exactly-once across watch,
+  wait, and piggyback), and falls back to resolving the most recently active
+  session matching the current directory when no local session state is shared.
+- A Claude Code plugin (`plugin/`, published via a repo-hosted marketplace)
+  bundles the sideshow MCP server, the skill, and a background monitor that
+  runs `sideshow watch` — browser comments arrive in the agent as notifications
+  without pasting or re-arming a watcher. Install with
+  `/plugin marketplace add modem-dev/sideshow` then
+  `/plugin install sideshow@sideshow`.
+- A "connect Claude Code" link in the viewer (sidebar footer and the onboarding
+  screen) opens an integrations panel with the plugin install commands, what
+  the monitor runs, and the honest caveats (two commands, not a one-click;
+  needs Claude Code ≥ 2.1.105).
 
 ### Changed
 
@@ -54,6 +72,10 @@ All notable user-visible changes to this project are documented in this file.
   Earlier) so the freshest work stays on top, and sessions with no surfaces yet
   are dimmed and sunk to the bottom of their group — keeping a long history
   scannable.
+- The viewer is framed around leaving comments rather than messaging an agent:
+  composers read "Leave a comment…" with a "Comment" button. No delivery
+  receipts or "listening" indicators — a comment is an annotation the agent
+  picks up through the feedback loop, not a synchronous message.
 - A surface card's open and delete actions are now minimal Lucide icons
   (external-link and trash) instead of text labels; delete turns red on hover.
 - `sideshow-term watch` now starts a local server in the background when needed,
