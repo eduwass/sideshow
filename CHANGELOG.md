@@ -6,6 +6,13 @@ All notable user-visible changes to this project are documented in this file.
 
 ### Added
 
+- `markdown` parts: agents can publish prose (explanations, plans, tradeoff
+  write-ups) the viewer renders with consistent typography — headings, lists,
+  tables, links, and syntax-highlighted fenced code blocks (shiki, the same
+  highlighter the diff parts use). Available on all three tiers: a `markdown` part
+  over MCP and `POST /api/surfaces`, plus the CLI (`sideshow markdown`, and
+  `--md` on `sideshow publish`). Rendered as data, not sandboxed markup: raw
+  HTML in the source is escaped, so reach for an `html` part for live markup.
 - The npm package now exposes a stable `sideshow/server` entrypoint for
   integrations such as `sideshow-term` to reuse `createApp` and `JsonFileStore`
   without importing private `dist/server/*` internals.
