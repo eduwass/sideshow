@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -10,6 +10,9 @@ import { parseArgs } from "node:util";
 const BASE = (process.env.SIDESHOW_URL ?? "http://localhost:4242").replace(/\/$/, "");
 const TOKEN = process.env.SIDESHOW_TOKEN;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+// This script's own path — used to register the Stop hook so it works whether
+// or not `sideshow` is on PATH (a fresh clone, an npx run, a global install).
+const SELF = fileURLToPath(import.meta.url);
 
 const HELP = `sideshow — a live visual surface for terminal coding agents
 
@@ -66,6 +69,25 @@ usage:
                         publish to create one)
       --after <seq>     re-read comments after this cursor on the first poll
                         (default: resume where the agent left off, server-side)
+  sideshow install-hook [options]         register a Claude Code Stop hook so the
+                                          trace syncs itself after every turn —
+                                          hands-off, no agent effort (Claude Code)
+      --shared          write .claude/settings.json (committed) instead of the
+                        default .claude/settings.local.json (gitignored, personal)
+      --user            write ~/.claude/settings.json (all projects)
+      --print           print the hook JSON snippet instead of writing settings
+  sideshow trace-sync [options]           manually sync your step trace from the
+                                          session transcript onto the timeline —
+                                          the fallback when the hook isn't set up
+                                          (run after publishing)
+      --session <id>    target session (default: auto)
+      --transcript <f>  transcript file (default: newest Claude Code log for cwd)
+      --pad <n>         prompts of context to keep around the session's surfaces
+                        (default 5; the trace is windowed so it explains how
+                        THESE visuals were made, not the whole session)
+      --all             sync the whole transcript, not just the windowed slice
+      --reset           replace the session's trace (full re-sync, not just the tail)
+      --quiet           print nothing on success
   sideshow comment <text> [options]       reply to the user on a surface
       --surface <id>    surface to attach the comment to (required)
       --author <name>   defaults to agent name
@@ -105,6 +127,22 @@ async function api(path, init = {}) {
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) fail(body.error ?? `${res.status} ${res.statusText}`);
+  return body;
+}
+
+// Like api(), but throws instead of exiting the process — for callers that must
+// stay alive on failure (the Stop hook must never kill the agent's turn).
+async function fetchJson(path, init = {}) {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}),
+      ...init.headers,
+    },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
   return body;
 }
 
@@ -224,14 +262,13 @@ async function resolveSession(flags, { create = false } = {}) {
 // `agentPid()` can hash to a different key. Fall back to asking the server for
 // the most recently active session whose cwd matches ours. Uses raw fetch (not
 // `api()`) so a transient failure returns null instead of exiting the process.
-async function resolveSessionByCwd() {
+async function resolveSessionByCwd(cwd = process.cwd()) {
   try {
     const res = await fetch(`${BASE}/api/sessions`, {
       headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
     });
     if (!res.ok) return null;
     const sessions = await res.json();
-    const cwd = process.cwd();
     return (
       sessions
         .filter((s) => s.cwd === cwd)
@@ -374,6 +411,217 @@ function parse(config = {}) {
 function entrypoint(...parts) {
   const built = join(ROOT, "dist", ...parts).replace(/\.ts$/, ".js");
   return existsSync(built) ? built : join(ROOT, ...parts);
+}
+
+// --- trace sync: derive a session's step trace from the agent's transcript ---
+// The agent already writes a full session transcript; rather than instrument
+// every tool call live, we read that transcript and post a curated, truncated,
+// incremental batch — the agent runs this at its leisure (e.g. after a publish)
+// so the user can see how it got there. Claude Code is the transcript format
+// supported today (newest *.jsonl under ~/.claude/projects/<encoded-cwd>/).
+
+const TRACE_MAX_DETAIL = 1800;
+const TRACE_MAX_LABEL = 140;
+const truncStr = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
+
+function findTranscript(cwd) {
+  const dir = join(homedir(), ".claude", "projects", cwd.replace(/[/.]/g, "-"));
+  if (!existsSync(dir)) return null;
+  let newest = null;
+  let newestMs = -1;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".jsonl")) continue;
+    const p = join(dir, f);
+    const m = statSync(p).mtimeMs;
+    if (m > newestMs) {
+      newestMs = m;
+      newest = p;
+    }
+  }
+  return newest;
+}
+
+function resultText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((b) => (typeof b === "string" ? b : (b?.text ?? ""))).join("");
+  }
+  return "";
+}
+
+// Map a tool call to a compact {kind,label} — a few meaningful kinds, not the
+// raw tool zoo (mirrors how a tracing tool normalizes events).
+function summarizeTool(name, input) {
+  const base = (p) => (typeof p === "string" ? p.split("/").pop() : "");
+  if (name === "Read") return { kind: "read", label: `Read ${base(input?.file_path)}` };
+  if (["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(name)) {
+    return { kind: "edit", label: `Edit ${base(input?.file_path ?? input?.notebook_path)}` };
+  }
+  if (name === "Grep")
+    return { kind: "grep", label: `Grep ${JSON.stringify(input?.pattern ?? "")}` };
+  if (name === "Glob") return { kind: "glob", label: `Glob ${input?.pattern ?? ""}` };
+  if (name === "Bash") return { kind: "run", label: input?.command ?? "command" };
+  if (name === "WebFetch") return { kind: "web", label: `Fetch ${input?.url ?? ""}` };
+  if (name === "WebSearch")
+    return { kind: "web", label: `Search ${JSON.stringify(input?.query ?? "")}` };
+  if (name === "Task") return { kind: "agent", label: input?.description ?? "Subagent task" };
+  if (name?.startsWith("mcp__")) return { kind: "mcp", label: name.split("__").slice(1).join(" ") };
+  return { kind: (name || "tool").toLowerCase().slice(0, 20), label: name || "tool" };
+}
+
+// Parse a Claude Code transcript into ordered steps, pairing each tool_use with
+// its later tool_result for the detail body. Skips noise (TodoWrite, partial
+// last line). Best-effort: a format it doesn't recognize yields no steps.
+function buildTraceSteps(text) {
+  const steps = [];
+  const pending = new Map(); // tool_use_id -> step index awaiting its result
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let rec;
+    try {
+      rec = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    const ts = typeof rec.timestamp === "string" ? rec.timestamp : undefined;
+    const role = rec.message?.role;
+    const content = rec.message?.content;
+
+    // A genuine user prompt: real text the user typed, not an injected/meta
+    // message (isMeta), a slash-command wrapper or system-reminder (starts with
+    // "<"), or a user record that only carries a tool_result. Those latter ones
+    // fall through to the block loop so their results still pair with the call.
+    if (role === "user" && !rec.isMeta && !rec.isSidechain) {
+      const carriesResult =
+        Array.isArray(content) && content.some((b) => b?.type === "tool_result");
+      let prompt = "";
+      if (typeof content === "string") prompt = content;
+      else if (Array.isArray(content) && !carriesResult) {
+        prompt = content
+          .filter((b) => b?.type === "text")
+          .map((b) => b.text)
+          .join("\n");
+      }
+      prompt = prompt.trim();
+      if (prompt && !prompt.startsWith("<")) {
+        steps.push({
+          kind: "prompt",
+          label: truncStr(prompt.split("\n")[0], TRACE_MAX_LABEL),
+          detail: truncStr(prompt, TRACE_MAX_DETAIL),
+          ts,
+        });
+        continue;
+      }
+    }
+
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block?.type === "text" && role === "assistant") {
+        const say = (block.text ?? "").trim();
+        if (say) {
+          steps.push({
+            kind: "say",
+            label: truncStr(say.split("\n")[0], TRACE_MAX_LABEL),
+            detail: truncStr(say, TRACE_MAX_DETAIL),
+            ts,
+          });
+        }
+      } else if (block?.type === "tool_use" && block.name !== "TodoWrite") {
+        const { kind, label } = summarizeTool(block.name, block.input);
+        steps.push({
+          kind,
+          label: truncStr(label, TRACE_MAX_LABEL),
+          detail: truncStr(JSON.stringify(block.input ?? {}), TRACE_MAX_DETAIL),
+          ts,
+        });
+        pending.set(block.id, steps.length - 1);
+      } else if (block?.type === "tool_result") {
+        const idx = pending.get(block.tool_use_id);
+        if (idx != null) {
+          const out = truncStr(resultText(block.content), 1200).trim();
+          if (out)
+            steps[idx].detail = truncStr(`${steps[idx].detail}\n\n→ ${out}`, TRACE_MAX_DETAIL);
+          pending.delete(block.tool_use_id);
+        }
+      } else if (block?.type === "thinking" && typeof block.thinking === "string") {
+        const think = block.thinking.trim();
+        if (think)
+          steps.push({ kind: "think", label: truncStr(think.split("\n")[0], TRACE_MAX_LABEL), ts });
+      }
+    }
+  }
+  return steps;
+}
+
+// Restrict a transcript's steps to a window of prompts around this session's
+// surfaces, so each session's trace shows how ITS visuals were made — the
+// prompts/thinking/tools near when they were published — not the whole
+// transcript. `pad` is how many prompts of context to keep on each side.
+function scopeToSurfaces(steps, surfaceTimes, pad) {
+  if (!surfaceTimes.length) return steps;
+  const promptTs = steps
+    .filter((s) => s.kind === "prompt" && s.ts)
+    .map((s) => Date.parse(s.ts))
+    .filter((t) => Number.isFinite(t))
+    .sort((a, b) => a - b);
+  if (!promptTs.length) return steps;
+  const first = surfaceTimes[0];
+  const last = surfaceTimes[surfaceTimes.length - 1];
+  const countAtOrBefore = (t) => promptTs.filter((p) => p <= t).length;
+  const startIdx = Math.max(0, countAtOrBefore(first) - 1 - pad);
+  const endIdx = Math.min(promptTs.length - 1, Math.max(0, countAtOrBefore(last) - 1) + pad);
+  const startTs = promptTs[startIdx];
+  const endTs = endIdx + 1 < promptTs.length ? promptTs[endIdx + 1] : Infinity;
+  return steps.filter((s) => {
+    const t = s.ts ? Date.parse(s.ts) : NaN;
+    return Number.isFinite(t) && t >= startTs && t < endTs;
+  });
+}
+
+// Core trace sync, shared by the `trace-sync` command and the `hook`. Reads the
+// transcript, windows it around the session's surfaces (unless `all`), and POSTs
+// the slice. Uses fetchJson (throws, never exits) so the hook can swallow
+// failures. A windowed sync always replaces — the span shifts as the session
+// grows, so the per-session cursor only matters for un-windowed (`all`) syncs.
+async function syncTrace({ session, transcript, pad = 5, all = false, reset = false }) {
+  const steps = buildTraceSteps(readFileSync(transcript, "utf8"));
+  let scoped = steps;
+  if (!all) {
+    const metas = await fetchJson(`/api/sessions/${session}/surfaces`).catch(() => []);
+    const times = (Array.isArray(metas) ? metas : [])
+      .map((m) => Date.parse(m.createdAt))
+      .filter((t) => Number.isFinite(t))
+      .sort((a, b) => a - b);
+    scoped = scopeToSurfaces(steps, times, pad);
+  }
+  const windowed = scoped.length !== steps.length;
+  const cursors = readState().traceCursors ?? {};
+  const prev = cursors[session];
+  const doReset = reset || windowed || prev == null || scoped.length < prev;
+  const toSend = doReset ? scoped : scoped.slice(prev);
+  if (toSend.length === 0 && !doReset) {
+    return { session, added: 0, reset: false, windowed, total: scoped.length };
+  }
+  const res = await fetchJson(`/api/sessions/${session}/trace`, {
+    method: "POST",
+    body: JSON.stringify({ steps: toSend, reset: doReset }),
+  });
+  writeState({ traceCursors: { ...cursors, [session]: scoped.length } });
+  return { session, added: toSend.length, reset: doReset, windowed, total: res.count };
+}
+
+// Read all of stdin (the JSON payload a Claude Code hook delivers). Resolves to
+// "" when there's no piped input (e.g. a TTY) so callers can no-op cleanly.
+function readStdin() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) return resolve("");
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (c) => (data += c));
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", () => resolve(data));
+  });
 }
 
 const commands = {
@@ -695,6 +943,117 @@ const commands = {
         console.log(watchLine(c));
       }
     }
+  },
+
+  // Derive this session's step trace from the agent's transcript and post the
+  // steps appended since last run (one batched call). The agent runs it at a
+  // checkpoint — e.g. right after publishing — so the timeline shows the work
+  // behind each surface. Idempotent: a per-session cursor sends only the tail,
+  // and the first sync of a session replaces (reset) so re-runs never dupe.
+  async "trace-sync"() {
+    const { values: flags, positionals } = parse({
+      options: {
+        session: { type: "string" },
+        transcript: { type: "string" },
+        pad: { type: "string" },
+        all: { type: "boolean" },
+        quiet: { type: "boolean" },
+        reset: { type: "boolean" },
+      },
+      allowPositionals: true,
+    });
+    const session = (await resolveSession(flags)) ?? (await resolveSessionByCwd());
+    if (!session) fail("no active session — publish first, or pass --session");
+    const transcript = flags.transcript ?? positionals[0] ?? findTranscript(process.cwd());
+    if (!transcript || !existsSync(transcript)) {
+      fail(
+        `no transcript found (looked under ~/.claude/projects for ${process.cwd()}) — pass --transcript <file>`,
+      );
+    }
+    const pad = flags.pad != null ? Math.max(0, parseInt(flags.pad, 10) || 0) : 5;
+    let result;
+    try {
+      result = await syncTrace({
+        session,
+        transcript,
+        pad,
+        all: flags.all,
+        reset: flags.reset,
+      });
+    } catch (err) {
+      fail(err.message);
+    }
+    if (!flags.quiet) out(result);
+  },
+
+  // Internal: run from a Claude Code Stop hook. Reads the hook payload on stdin
+  // (transcript_path, cwd) and syncs the trace for whichever sideshow session
+  // owns that cwd. Claude Code hands us the exact transcript, so this never has
+  // to guess. Must NEVER disturb the agent — every failure path is swallowed and
+  // the process exits 0 with no stdout (a Stop hook's stdout is parsed as JSON).
+  async hook() {
+    try {
+      const raw = await readStdin();
+      const payload = raw ? JSON.parse(raw) : {};
+      const transcript = payload.transcript_path;
+      const cwd = payload.cwd || process.cwd();
+      if (!transcript || !existsSync(transcript)) return;
+      const session = process.env.SIDESHOW_SESSION ?? (await resolveSessionByCwd(cwd));
+      if (!session) return; // no sideshow session for this cwd — nothing to trace
+      await syncTrace({ session, transcript });
+    } catch {
+      // A trace hook must never interfere with the agent — stay silent.
+    }
+  },
+
+  // Register the Stop hook in Claude Code settings so the trace syncs itself
+  // after every turn. Writes .claude/settings.local.json by default (gitignored,
+  // personal); --shared targets the committed .claude/settings.json; --user the
+  // global ~/.claude/settings.json. Idempotent. --print just emits the snippet.
+  async "install-hook"() {
+    const { values: flags } = parse({
+      options: {
+        print: { type: "boolean" },
+        shared: { type: "boolean" },
+        user: { type: "boolean" },
+        event: { type: "string" },
+      },
+    });
+    const event = flags.event ?? "Stop";
+    const command = `${SELF} hook`;
+    const entry = { hooks: [{ type: "command", command }] };
+    if (flags.print) {
+      out({ hooks: { [event]: [entry] } });
+      return;
+    }
+    const file = flags.user
+      ? join(homedir(), ".claude", "settings.json")
+      : flags.shared
+        ? join(process.cwd(), ".claude", "settings.json")
+        : join(process.cwd(), ".claude", "settings.local.json");
+    let settings = {};
+    try {
+      settings = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      // missing or unparseable — start fresh
+    }
+    settings.hooks ??= {};
+    settings.hooks[event] ??= [];
+    // Match our specific `sideshow[.js] hook` invocation — NOT the feedback
+    // hook (`sideshow-stop-hook.mjs check|watch`), which also contains both
+    // "sideshow" and "hook" but ends in a different verb.
+    const isOurs = (cmd) => typeof cmd === "string" && /sideshow(\.js)?["']?\s+hook\b/.test(cmd);
+    const already = settings.hooks[event].some((g) =>
+      (g.hooks ?? []).some((h) => isOurs(h.command)),
+    );
+    if (already) {
+      out({ ok: true, file, event, status: "already-installed" });
+      return;
+    }
+    settings.hooks[event].push(entry);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
+    out({ ok: true, file, event, command, status: "installed" });
   },
 
   async comment() {
