@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderHtmlPage } from "../server/surfacePage.ts";
+import { escapeHtml, renderHtmlPage, renderSandboxedPart } from "../server/surfacePage.ts";
 
 const ORIGIN = "http://localhost:4000";
 
@@ -9,6 +9,21 @@ function csp(html: string): string {
   const m = html.match(/Content-Security-Policy" content="([^"]*)"/);
   assert.ok(m, "rendered page must carry a CSP meta tag");
   return m![1];
+}
+
+// Parse the rendered <meta http-equiv> CSP into directive -> source tokens.
+// Asserting on exact source tokens (array membership) rather than substring-
+// matching the policy string keeps these checks precise and avoids the
+// URL-substring-sanitization shape static analysis (correctly) distrusts.
+function cspDirectives(doc: string): Record<string, string[]> {
+  const m = /content="([^"]*)"/.exec(doc.slice(doc.indexOf("Content-Security-Policy")));
+  const policy = m ? m[1] : "";
+  const out: Record<string, string[]> = {};
+  for (const directive of policy.split(";")) {
+    const [name, ...sources] = directive.trim().split(/\s+/);
+    if (name) out[name] = sources;
+  }
+  return out;
 }
 
 // The CDN allowlist html parts may load from. This is a deliberate, fixed set —
@@ -100,4 +115,54 @@ test("theme tokens are injected and resolve unknown/absent themes to the default
     unknown.match(/--color-text-primary:[^;]*/)?.[0],
     "unknown theme should render identically to the default",
   );
+});
+
+test("renderSandboxedPart embeds the body and css inside the sandbox doc", () => {
+  const doc = renderSandboxedPart({
+    body: "<p>hello</p>",
+    css: "p{color:red}",
+    origin: ORIGIN,
+  });
+  assert.ok(doc.includes("<p>hello</p>"), "body is present");
+  assert.ok(doc.includes("p{color:red}"), "css is present");
+  // srcdoc's base URL is about:srcdoc, so relative URLs (e.g. a markdown image
+  // at /a/:id) need an explicit base pinned to the origin to resolve.
+  assert.ok(doc.includes(`<base href="${ORIGIN}/">`), "base href pins the origin");
+  // the resize/openLink bridge ships in the frame so it can self-size
+  assert.ok(doc.includes("postMessage"), "bridge is present");
+  // chrome theme vars are injected (viewerThemeCss) so the part matches the viewer
+  assert.ok(doc.includes("--bg:"), "theme vars are injected");
+});
+
+test("renderSandboxedPart uses a tighter CSP than html parts: no connect-src, no CDN", () => {
+  const d = cspDirectives(renderSandboxedPart({ body: "x", css: "", origin: ORIGIN }));
+  assert.deepEqual(d["default-src"], ["'none'"], "locked-down default");
+  // script-src is EXACTLY the inline bridge — no CDN sources leak in
+  assert.deepEqual(d["script-src"], ["'unsafe-inline'"], "only the inline bridge runs");
+  // a contained script must have no way to phone home
+  assert.ok(!("connect-src" in d), "no connect-src");
+  // uploaded images still embed by absolute origin URL
+  assert.ok(d["img-src"]?.includes(ORIGIN), "origin allowed for images");
+});
+
+test("html parts keep their CDN allowlist (rich-part tightening did not leak)", () => {
+  const html = cspDirectives(renderHtmlPage({ title: "t", html: "<b>x</b>", origin: ORIGIN }));
+  const rich = cspDirectives(renderSandboxedPart({ body: "x", css: "", origin: ORIGIN }));
+  // rich parts lock script-src to the inline bridge alone; html parts add the
+  // CDN sources on top, so html's source list is strictly larger. (Asserting on
+  // the count rather than a host literal keeps this off the URL-substring path.)
+  assert.deepEqual(rich["script-src"], ["'unsafe-inline'"], "rich = inline bridge only");
+  assert.ok(
+    html["script-src"].length > rich["script-src"].length,
+    "html parts keep extra (CDN) script sources",
+  );
+  assert.ok("connect-src" in html, "html parts still have connect-src");
+});
+
+test("escapeHtml neutralizes markup metacharacters", () => {
+  assert.equal(
+    escapeHtml(`<img src=x onerror="alert(1)">`),
+    "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;",
+  );
+  assert.equal(escapeHtml("a & b"), "a &amp; b");
 });
