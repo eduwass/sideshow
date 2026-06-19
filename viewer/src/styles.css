@@ -592,9 +592,13 @@ iframe {
   white-space: pre-wrap;
   overflow-x: auto;
 }
-.thread {
+/* The thread is layout only — the comment list and the footer toolbar each draw
+   their own full-width separator and padding. That keeps every divider spanning
+   the whole card and the spacing identical whether or not the card has comments
+   yet, instead of the thread insetting its children once comments appear. */
+.cmts {
   border-top: 0.5px solid var(--border);
-  padding: 6px 14px 10px;
+  padding: 6px 14px;
 }
 .cmt {
   display: flex;
@@ -690,14 +694,24 @@ iframe {
   color: var(--text);
   background: var(--hover);
 }
-/* Footer action bar — a recessed well, a step darker than the agent surface
-   above it, so the whole human/control zone reads as chrome rather than as
-   part of the agent-rendered card. Reply is a quiet labelled action here;
-   open/copy/delete share the same row. */
+/* Footer action bar — a flat toolbar on the card surface, marked off only by a
+   hairline divider so it reads as chrome without nesting a second filled box
+   inside the card. The muted action styling carries the "this is controls, not
+   agent UI" cue. Reply is a quiet labelled action here; open/copy/delete share
+   the same row. */
 .card-actions {
   border-top: 0.5px solid var(--border);
-  background: var(--panel);
   padding: 5px 8px;
+  /* Pin the footer height and center its content so swapping the action bar for
+     the inline composer (and back) never changes the footer height — the card
+     above must not pop when you start or finish a comment. */
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.card-actions > * {
+  flex: 1;
+  min-width: 0;
 }
 .actbar {
   display: flex;
