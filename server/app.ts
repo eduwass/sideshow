@@ -77,16 +77,33 @@ function decodeBase64(b64: string): Uint8Array {
 // them with the real origin so a deployed instance shows copy-pasteable URLs.
 const LOCAL_ORIGIN = "http://localhost:8228";
 
+export type AuthenticateHook = (
+  request: Request,
+) => boolean | Response | Promise<boolean | Response>;
+
+export type BasePathHook = string | ((request: Request) => string | null | undefined);
+
 export interface AppOptions {
   store: Store;
   viewerHtml: string;
   guideMarkdown: string;
   setupText: string;
   agentHowtoText?: string;
-  // When set (cloud deployments), every route except /guide, /setup, and
-  // /agent-howto requires it: Authorization bearer, ?key= query, or
-  // the cookie it sets.
+  // When set (cloud deployments), this hook authorizes requests before any
+  // app route runs. Return true to allow, false to use the default 401, or a
+  // Response for custom denials. This is intentionally lower-level than
+  // authToken so hosts can validate edge-signed assertions without teaching
+  // sideshow about their session/token systems.
+  authenticate?: AuthenticateHook;
+  // When set (self-hosted Worker deployments), every route except /guide,
+  // /setup, and /agent-howto requires it: Authorization bearer, ?key= query,
+  // or the cookie it sets. Preserved for backwards compatibility.
   authToken?: string;
+  // Public path prefix for deployments mounted below an origin root, e.g.
+  // /u/:account in a hosted multi-tenant wrapper. The core still receives
+  // stripped routes like /api/sessions and /s/:id?part=0; this prefix is only
+  // used when the server/viewer generate browser-visible URLs.
+  basePath?: BasePathHook;
   // Update notice: the running version and the upgrade hint that fits this
   // deployment (npm install vs redeploy). Without `version`, /api/version
   // reports nothing and the viewer shows no notice.
@@ -197,7 +214,9 @@ export function createApp({
   guideMarkdown,
   setupText,
   agentHowtoText = setupText,
+  authenticate,
   authToken,
+  basePath,
   version,
   upgradeCommand,
   fetchLatestRelease,
@@ -213,6 +232,16 @@ export function createApp({
     console.error("sideshow: unhandled error", err);
     return c.json({ error: "internal error" }, 500);
   });
+
+  const normalizeBasePath = (value: string | null | undefined): string => {
+    if (!value || value === "/") return "";
+    const withLeading = value.startsWith("/") ? value : `/${value}`;
+    let end = withLeading.length;
+    while (end > 0 && withLeading.charCodeAt(end - 1) === 47) end--;
+    return withLeading.slice(0, end);
+  };
+  const requestBasePath = (request: Request): string =>
+    normalizeBasePath(typeof basePath === "function" ? basePath(request) : basePath);
 
   // Cached, fail-silent update lookup: being offline or rate-limited must
   // cost nothing but the absence of the notice. Failures are cached too, so
@@ -421,8 +450,19 @@ export function createApp({
   // --- auth ---
 
   app.use("*", async (c, next) => {
-    if (!authToken) return next();
     const path = new URL(c.req.url).pathname;
+
+    if (authenticate) {
+      const result = await authenticate(c.req.raw);
+      if (result === true) return next();
+      if (result instanceof Response) return result;
+      if (path.startsWith("/api") || path === "/mcp") {
+        return c.json({ error: "unauthorized" }, 401);
+      }
+      return c.text("unauthorized", 401);
+    }
+
+    if (!authToken) return next();
     if (path === "/guide" || path === "/setup" || path === "/agent-howto") return next();
 
     const bearer = c.req.header("authorization");
@@ -450,9 +490,19 @@ export function createApp({
   const withOrigin = (text: string, c: { req: { url: string } }) =>
     text.replaceAll(LOCAL_ORIGIN, new URL(c.req.url).origin);
 
-  app.get("/", (c) => c.html(withOrigin(viewerHtml, c)));
-  app.get("/session/:id", (c) => c.html(withOrigin(viewerHtml, c)));
-  app.get("/session/:id/s/:surfaceId", (c) => c.html(withOrigin(viewerHtml, c)));
+  const withViewerConfig = (text: string, request: Request) => {
+    const script = `<script>window.__SIDESHOW_BASE_PATH__=${JSON.stringify(requestBasePath(request))};</script>`;
+    const headClose = text.lastIndexOf("</head>");
+    return headClose >= 0
+      ? `${text.slice(0, headClose)}${script}${text.slice(headClose)}`
+      : `${script}${text}`;
+  };
+
+  const configuredViewerHtml = (request: Request, url: string) =>
+    withViewerConfig(withOrigin(viewerHtml, { req: { url } }), request);
+  app.get("/", (c) => c.html(configuredViewerHtml(c.req.raw, c.req.url)));
+  app.get("/session/:id", (c) => c.html(configuredViewerHtml(c.req.raw, c.req.url)));
+  app.get("/session/:id/s/:surfaceId", (c) => c.html(configuredViewerHtml(c.req.raw, c.req.url)));
   app.get("/guide", (c) => c.text(withOrigin(guideMarkdown, c)));
   app.get("/setup", (c) => c.text(withOrigin(setupText, c)));
   app.get("/agent-howto", (c) => c.text(withOrigin(agentHowtoText, c)));
@@ -719,7 +769,12 @@ export function createApp({
       title = old.title;
       parts = old.parts;
     }
-    const idx = Number(c.req.query("part") ?? 0);
+    const partParam = c.req.query("part");
+    const publicBasePath = requestBasePath(c.req.raw);
+    if (partParam == null && publicBasePath) {
+      return c.redirect(`${publicBasePath}/?surface=${encodeURIComponent(surface.id)}`, 302);
+    }
+    const idx = Number(partParam ?? 0);
     const part = parts[idx];
     if (!part || part.kind !== "html") return c.text("No html part at that index", 404);
     c.header("X-Content-Type-Options", "nosniff");
@@ -848,6 +903,7 @@ export function createApp({
 
   registerMcp(app, {
     store,
+    basePath: requestBasePath,
     publishSurface,
     reviseSurface,
     createComment,

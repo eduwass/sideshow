@@ -44,9 +44,27 @@ export interface VersionInfo {
   notes?: string | null;
 }
 
+declare global {
+  interface Window {
+    __SIDESHOW_BASE_PATH__?: string;
+  }
+}
+
+export function appBasePath(): string {
+  return window.__SIDESHOW_BASE_PATH__ ?? location.pathname.match(/^\/u\/[^/]+/)?.[0] ?? "";
+}
+
+export function appPath(path: string): string {
+  return `${appBasePath()}${path}`;
+}
+
+export function surfaceLink(id: string): string {
+  return `${location.origin}${appPath(`/s/${encodeURIComponent(id)}`)}`;
+}
+
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(
-    path,
+    appPath(path),
     init ? { headers: { "content-type": "application/json" }, ...init } : undefined,
   );
   if (!res.ok) {
