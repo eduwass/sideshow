@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { AgentMark } from "./agentMarks.tsx";
-import { api, relTime, sessionLabel, type SessionRow } from "./api.ts";
+import { api, isReadonly, publicReadMode, relTime, sessionLabel, type SessionRow } from "./api.ts";
 import { Card, cardEls, frameForSource } from "./Card.tsx";
 import { applyFrameHeight } from "./SandboxedPart.tsx";
 import { renderNotes } from "./notes.ts";
@@ -39,6 +39,7 @@ import {
 // The "Connect Claude Code" integrations modal — module-level so the sidebar
 // footer, the onboarding screen, and the overlay can all reach it.
 const [connectOpen, setConnectOpen] = createSignal(false);
+const readonlySessionMode = () => isReadonly() && publicReadMode() === "session";
 
 export default function App() {
   // Escape closes the integrations modal while it is open.
@@ -78,6 +79,7 @@ export default function App() {
     // Cmd+Option+Up/Down jumps between sessions without reaching for the
     // sidebar — Down moves to the next session in the list, Up the previous.
     const onKeydown = (e: KeyboardEvent) => {
+      if (readonlySessionMode()) return;
       if (!e.metaKey || !e.altKey || e.ctrlKey || e.shiftKey) return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -110,64 +112,76 @@ export default function App() {
     <>
       <div id="app">
         <header class="topbar">
-          <button
-            class="menu"
-            id="menuBtn"
-            aria-label="Show sessions"
-            onClick={() => setNavOpen(!navOpen())}
-          >
-            ☰<span class="dot" id="menuDot" classList={{ show: unread().size > 0 }}></span>
-          </button>
+          <Show when={!readonlySessionMode()}>
+            <button
+              class="menu"
+              id="menuBtn"
+              aria-label="Show sessions"
+              onClick={() => setNavOpen(!navOpen())}
+            >
+              ☰<span class="dot" id="menuDot" classList={{ show: unread().size > 0 }}></span>
+            </button>
+          </Show>
           <div class="brand">
             <span class="livedot" classList={{ on: live() }}></span>sideshow
           </div>
         </header>
-        <aside>
-          <div class="brand">
-            <span class="livedot" classList={{ on: live() }}></span>sideshow
-          </div>
-          <UpdateBanner />
-          <div id="sessionList">
-            <For each={sessionGroups()}>
-              {(group) => (
-                <>
-                  <div class="sess-group">{group.label}</div>
-                  <For each={group.sessions}>{(s) => <SessionItem session={s} />}</For>
-                </>
-              )}
-            </For>
-          </div>
-          <div class="aside-foot">
-            <ThemePicker />
-            <a href="/guide" target="_blank">
-              design guide
-            </a>{" "}
-            &nbsp;·&nbsp;{" "}
-            <a href="/setup" target="_blank">
-              agent setup
-            </a>{" "}
-            &nbsp;·&nbsp;{" "}
-            <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                setConnectOpen(true);
-              }}
-            >
-              connect Claude Code
-            </a>
-          </div>
-        </aside>
+        <Show when={!readonlySessionMode()}>
+          <aside>
+            <div class="brand">
+              <span class="livedot" classList={{ on: live() }}></span>sideshow
+            </div>
+            <UpdateBanner />
+            <div id="sessionList">
+              <For each={sessionGroups()}>
+                {(group) => (
+                  <>
+                    <div class="sess-group">{group.label}</div>
+                    <For each={group.sessions}>{(s) => <SessionItem session={s} />}</For>
+                  </>
+                )}
+              </For>
+            </div>
+            <div class="aside-foot">
+              <Show when={!isReadonly()}>
+                <ThemePicker />
+              </Show>
+              <a href="/guide" target="_blank">
+                design guide
+              </a>{" "}
+              &nbsp;·&nbsp;{" "}
+              <a href="/setup" target="_blank">
+                agent setup
+              </a>{" "}
+              <Show when={!isReadonly()}>
+                &nbsp;·&nbsp;{" "}
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setConnectOpen(true);
+                  }}
+                >
+                  connect Claude Code
+                </a>
+              </Show>
+            </div>
+          </aside>
+        </Show>
         <main
           onScroll={() => {
             if (nearBottom()) setPillTarget(null);
           }}
         >
-          <Onboard />
+          <Show when={!readonlySessionMode()}>
+            <Onboard />
+          </Show>
           <SessionView />
         </main>
       </div>
-      <div id="scrim" onClick={() => setNavOpen(false)}></div>
+      <Show when={!readonlySessionMode()}>
+        <div id="scrim" onClick={() => setNavOpen(false)}></div>
+      </Show>
       <Show when={connectOpen()}>
         <ConnectModal onClose={() => setConnectOpen(false)} />
       </Show>
@@ -268,6 +282,7 @@ async function onBridgeMessage(ev: MessageEvent) {
   // check that recognizes any embedded iframe.)
   if (d.type === "switch-session") {
     if (!isOwnFrame(ev.source)) return;
+    if (readonlySessionMode()) return;
     // A surface iframe forwarded the session-switch shortcut because focus was
     // inside it (see server/surfacePage.ts). Mirror the parent keydown handler.
     void selectAdjacent(d.key === "ArrowUp" ? -1 : 1);
@@ -279,6 +294,7 @@ async function onBridgeMessage(ev: MessageEvent) {
   if (d.type === "resize" && src) {
     applyFrameHeight(src.iframe, d.height);
   } else if (d.type === "send-prompt" && src) {
+    if (isReadonly()) return;
     await api("/api/comments", {
       method: "POST",
       body: JSON.stringify({ surface: src.id, text: String(d.text), author: "user" }),
@@ -334,18 +350,20 @@ function SessionItem(props: { session: SessionRow }) {
         {props.session.agent} · {relTime(props.session.lastActiveAt)}
       </div>
       <span class="dot"></span>
-      <button
-        class="x"
-        title="Delete session"
-        aria-label={`Delete session "${label()}"`}
-        onClick={async (e) => {
-          e.stopPropagation();
-          if (!confirm(`Delete "${label()}" and its surfaces?`)) return;
-          await api(`/api/sessions/${props.session.id}`, { method: "DELETE" });
-        }}
-      >
-        ✕
-      </button>
+      <Show when={!isReadonly()}>
+        <button
+          class="x"
+          title="Delete session"
+          aria-label={`Delete session "${label()}"`}
+          onClick={async (e) => {
+            e.stopPropagation();
+            if (!confirm(`Delete "${label()}" and its surfaces?`)) return;
+            await api(`/api/sessions/${props.session.id}`, { method: "DELETE" });
+          }}
+        >
+          ✕
+        </button>
+      </Show>
     </div>
   );
 }
@@ -416,7 +434,7 @@ function SessionTitle(props: { current: SessionRow | undefined }) {
     }
   });
   const commit = async () => {
-    if (!props.current) return;
+    if (isReadonly() || !props.current) return;
     const next = el.textContent?.trim() ?? "";
     if (next && next !== sessionLabel(props.current)) {
       await api(`/api/sessions/${props.current.id}`, {
@@ -429,7 +447,7 @@ function SessionTitle(props: { current: SessionRow | undefined }) {
     <span
       id="sessTitle"
       ref={(span) => (el = span)}
-      contentEditable={true}
+      contentEditable={!isReadonly()}
       spellcheck={false}
       role="textbox"
       aria-label="Session title"
@@ -458,19 +476,29 @@ const TRY_SNIP =
 function Onboard() {
   return (
     <div id="onboard" hidden={sessions.length > 0}>
-      <h1>The show hasn&rsquo;t started yet</h1>
-      <p class="sub">
-        sideshow is a live surface where coding agents draw HTML snippets — diagrams, sketches,
-        explainers — while they work in your terminal.
-      </p>
-      <h2>teach your agent about it</h2>
-      <Snip text={SETUP_SNIP} />
-      <h2>or try it yourself</h2>
-      <Snip text={TRY_SNIP} />
-      <h2>using claude code?</h2>
-      <button class="connect-btn" onClick={() => setConnectOpen(true)}>
-        Connect Claude Code →
-      </button>
+      <Show
+        when={!isReadonly()}
+        fallback={
+          <>
+            <h1>Nothing here yet</h1>
+            <p class="sub">This sideshow board does not have any sessions yet.</p>
+          </>
+        }
+      >
+        <h1>The show hasn&rsquo;t started yet</h1>
+        <p class="sub">
+          sideshow is a live surface where coding agents draw HTML snippets — diagrams, sketches,
+          explainers — while they work in your terminal.
+        </p>
+        <h2>teach your agent about it</h2>
+        <Snip text={SETUP_SNIP} />
+        <h2>or try it yourself</h2>
+        <Snip text={TRY_SNIP} />
+        <h2>using claude code?</h2>
+        <button class="connect-btn" onClick={() => setConnectOpen(true)}>
+          Connect Claude Code →
+        </button>
+      </Show>
     </div>
   );
 }
