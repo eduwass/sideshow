@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { escapeHtml, renderHtmlPage, renderSandboxedPart } from "../server/surfacePage.ts";
+import { themeById } from "../server/themes.ts";
 
 const ORIGIN = "http://localhost:4000";
 
@@ -114,6 +115,47 @@ test("theme tokens are injected and resolve unknown/absent themes to the default
     none.match(/--color-text-primary:[^;]*/)?.[0],
     unknown.match(/--color-text-primary:[^;]*/)?.[0],
     "unknown theme should render identically to the default",
+  );
+});
+
+test("a pinned mode forces the scheme into html parts but not transparent rich frames", () => {
+  const gh = renderHtmlPage({ title: "t", html: "<p>x</p>", origin: ORIGIN, mode: "dark" });
+  // the document's used color-scheme is forced so the UA canvas/scrollbars/
+  // controls follow it, overriding the static `color-scheme: light dark` default
+  assert.ok(/:root\{color-scheme:dark\}/.test(gh), "color-scheme must be pinned to dark");
+  // and EVERYTHING that flips by scheme is pinned: the theme tokens AND the kit's
+  // own teal/coral SVG accents — so no `@media (prefers-color-scheme)` survives to
+  // second-guess the scheme inside the frame
+  assert.ok(
+    !gh.includes("@media (prefers-color-scheme: dark)"),
+    "pinned mode drops the media query",
+  );
+  assert.ok(gh.includes("--c-teal-bg: rgba(31, 169, 150, 0.18)"), "kit teal accent pinned to dark");
+
+  // light pins the other way; absent mode keeps the OS-driven media query
+  const light = renderHtmlPage({ title: "t", html: "<p>x</p>", origin: ORIGIN, mode: "light" });
+  assert.ok(/:root\{color-scheme:light\}/.test(light), "color-scheme must be pinned to light");
+  const auto = renderHtmlPage({ title: "t", html: "<p>x</p>", origin: ORIGIN });
+  assert.ok(!auto.includes("color-scheme:dark"), "no mode → no forced scheme");
+  assert.ok(auto.includes("@media (prefers-color-scheme: dark)"), "no mode → OS media query kept");
+
+  // rich/comment frames pin the same way — EXCEPT color-scheme. Those frames are
+  // transparent so the themed card surface shows through; a forced color-scheme
+  // would paint an opaque UA canvas behind them. So the tokens are pinned (flat
+  // :root, dark --text, no media query) but color-scheme is left unset.
+  const rich = renderSandboxedPart({ body: "x", css: "", origin: ORIGIN, mode: "dark" });
+  const dark = themeById("github").dark;
+  assert.ok(
+    !rich.includes("color-scheme:"),
+    "rich frame must NOT force color-scheme (stays transparent)",
+  );
+  assert.ok(
+    !rich.includes("@media (prefers-color-scheme: dark)"),
+    "rich tokens are pinned, no media query",
+  );
+  assert.ok(
+    rich.includes(`--text: ${dark.text}`),
+    "rich frame carries the pinned dark chrome vars",
   );
 });
 
