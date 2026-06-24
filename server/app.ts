@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import { decodeBase64 } from "./base64.ts";
@@ -23,6 +24,14 @@ import { validateSurfaceParts } from "./surfaceParts.ts";
 
 const MAX_SURFACE_BYTES = 2 * 1024 * 1024;
 const MAX_WAIT_SECONDS = 300;
+// Hard ceiling on any request body, applied globally. Every write endpoint
+// reads its body with an unbounded `c.req.json()` (and /mcp likewise), so
+// without this a single oversize POST is an out-of-memory flood — and the local
+// default ships with no auth token, so those endpoints are reachable
+// unauthenticated. Sized to clear the largest legitimate body — a base64 asset
+// uploaded over MCP, ~4/3 of the 5 MiB asset cap — while still bounding a flood.
+// The /api/assets route's own 5 MiB streaming cap is stricter and still applies.
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
 // Bound the session trace: each step's detail is truncated and the per-session
 // list rolls, so memory stays flat no matter how long the agent runs.
 const MAX_TRACE_STEPS = 2000;
@@ -76,41 +85,6 @@ const isAssetKind = (v: unknown): v is AssetKind => v === "image" || v === "trac
 // Docs and onboarding snippets are written against the local default; serve
 // them with the real origin so a deployed instance shows copy-pasteable URLs.
 const LOCAL_ORIGIN = "http://localhost:8228";
-
-// Read a request body into one Uint8Array, stopping and returning null once it
-// exceeds `limit`. Lets an upload route bound memory before it knows the real
-// size: a chunked request sends no Content-Length, so a plain `arrayBuffer()`
-// would buffer the entire stream into memory first. Web-streams only
-// (`Request.body`), so it stays runtime-agnostic across Node and Workers.
-async function readBodyCapped(req: Request, limit: number): Promise<Uint8Array | null> {
-  const stream = req.body;
-  if (!stream) {
-    const buf = new Uint8Array(await req.arrayBuffer());
-    return buf.byteLength > limit ? null : buf;
-  }
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  if (chunks.length === 1) return chunks[0];
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-}
 
 export type AuthenticateHook = (
   request: Request,
@@ -559,6 +533,26 @@ export function createApp({
     return c.text("unauthorized — open this page as /?key=<your token>", 401);
   });
 
+  // Cap every request body. Runs after auth, so an unauthenticated request on a
+  // token-protected board is rejected (401) before its body is ever read; on a
+  // no-token board it still bounds the body. bodyLimit short-circuits on an
+  // oversize Content-Length and otherwise streams-and-aborts at the cap, so a
+  // chunked body (no Content-Length) can't slip past either. /api/assets is
+  // exempt here because it applies its own, stricter cap (limitAssetBody below).
+  const limitBody = bodyLimit({
+    maxSize: MAX_BODY_BYTES,
+    onError: (c) => c.json({ error: "request body too large" }, 413),
+  });
+  app.use("*", (c, next) => (c.req.path === "/api/assets" ? next() : limitBody(c, next)));
+
+  // The asset route's own (tighter) body cap. Keeps the asset limit and its
+  // wording, and bounds the upload before it is read — bodyLimit refuses an
+  // oversize Content-Length outright and aborts a chunked stream at the cap.
+  const limitAssetBody = bodyLimit({
+    maxSize: MAX_ASSET_BYTES,
+    onError: (c) => c.json({ error: `asset exceeds ${MAX_ASSET_BYTES} bytes` }, 413),
+  });
+
   // --- pages and docs ---
 
   const withOrigin = (text: string, c: { req: { url: string } }) =>
@@ -918,20 +912,12 @@ export function createApp({
   // and a JSON client both work, and MCP can ride base64. The body is read once
   // and only treated as an envelope when it is application/json carrying a
   // base64 `data` string; a raw JSON asset (no top-level `data`) stays raw.
-  app.post("/api/assets", async (c) => {
+  app.post("/api/assets", limitAssetBody, async (c) => {
     const mime = (c.req.header("content-type") ?? "").split(";")[0].trim().toLowerCase();
-    // Bound the body twice. The Content-Length header is an early-out for
-    // honest clients, but a chunked upload sends no Content-Length — so
-    // readBodyCapped enforces the same cap while streaming, stopping before it
-    // buffers the whole body into memory (an unauthenticated OOM otherwise). The
-    // post-decode cap in uploadAsset still applies (a base64 envelope decodes to
-    // ~3/4), so the true asset limit is enforced however the bytes arrive.
-    const declaredLen = Number(c.req.header("content-length") ?? 0);
-    if (declaredLen > MAX_ASSET_BYTES) {
-      return c.json({ error: `asset exceeds ${MAX_ASSET_BYTES} bytes` }, 413);
-    }
-    const buf = await readBodyCapped(c.req.raw, MAX_ASSET_BYTES);
-    if (!buf) return c.json({ error: `asset exceeds ${MAX_ASSET_BYTES} bytes` }, 413);
+    // limitAssetBody has already bounded the body to MAX_ASSET_BYTES, so this
+    // read is safe. The post-decode cap in uploadAsset still applies (a base64
+    // envelope decodes to ~3/4), enforcing the true asset limit on the bytes.
+    const buf = new Uint8Array(await c.req.arrayBuffer());
     let envelope: any = null;
     if (mime === "application/json") {
       try {

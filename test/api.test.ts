@@ -1370,9 +1370,9 @@ test("caps a chunked upload with no Content-Length instead of buffering it", asy
 
 test("assembles a valid multi-chunk streamed upload and stores it intact", async () => {
   const app = makeApp();
-  // A streamed body under the cap must be accepted, and readBodyCapped must
-  // stitch its chunks back together in order — every other upload test sends a
-  // single chunk, so this is the only cover for the concat path. We read the
+  // A streamed body under the cap must be accepted and its chunks reassembled
+  // in order — every other upload test sends a single chunk, so this is the only
+  // cover for a multi-chunk body surviving the bodyLimit re-wrap. We read the
   // asset back and compare bytes so a wrong offset/order would fail loudly.
   const stream = new ReadableStream({
     start(controller) {
@@ -1395,6 +1395,30 @@ test("assembles a valid multi-chunk streamed upload and stores it intact", async
   assert.equal(asset.byteLength, 9);
   const served = await app.request(`/a/${asset.id}`);
   assert.deepEqual([...new Uint8Array(await served.arrayBuffer())], [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+});
+
+test("the global body cap rejects oversize JSON and MCP bodies", async () => {
+  const app = makeApp();
+  // Every write endpoint reads its body with an unbounded c.req.json(); the
+  // global bodyLimit must refuse an oversize one with a 413 before it is read.
+  // An over-cap Content-Length is the cheap path (no body buffered) — assert it
+  // fires on a REST write endpoint and on /mcp, the two body-reading surfaces.
+  const oversize = {
+    "content-type": "application/json",
+    "content-length": String(17 * 1024 * 1024),
+  };
+  const surfaces = await app.request("/api/surfaces", {
+    method: "POST",
+    headers: oversize,
+    body: new Uint8Array(0), // no bytes sent — the Content-Length check fires first
+  });
+  assert.equal(surfaces.status, 413);
+  const mcp = await app.request("/mcp", {
+    method: "POST",
+    headers: oversize,
+    body: new Uint8Array(0),
+  });
+  assert.equal(mcp.status, 413);
 });
 
 test("uploading to an unknown session 404s; serving a missing asset 404s", async () => {
