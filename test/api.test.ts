@@ -1337,6 +1337,66 @@ test("rejects an oversize Content-Length before buffering the body", async () =>
   assert.match(((await res.json()) as any).error, /exceeds/);
 });
 
+test("caps a chunked upload with no Content-Length instead of buffering it", async () => {
+  const app = makeApp();
+  // A streamed body sends no Content-Length, so the header early-out can't fire.
+  // The handler must stop reading once the byte cap is exceeded rather than
+  // buffering the whole stream (an unauthenticated OOM). Prove it stopped by
+  // counting how many 1 MiB chunks the stream was actually asked for: if it read
+  // everything it would pull all 40; capped at 5 MiB it should stop near 6.
+  let pulled = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulled++;
+      if (pulled > 40) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(new Uint8Array(1024 * 1024));
+    },
+  });
+  const res = await app.request(
+    new Request("http://localhost/api/assets?kind=file", {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }),
+  );
+  assert.equal(res.status, 413);
+  assert.match(((await res.json()) as any).error, /exceeds/);
+  assert.ok(pulled < 16, `read too much before capping: ${pulled} chunks`);
+});
+
+test("assembles a valid multi-chunk streamed upload and stores it intact", async () => {
+  const app = makeApp();
+  // A streamed body under the cap must be accepted, and readBodyCapped must
+  // stitch its chunks back together in order — every other upload test sends a
+  // single chunk, so this is the only cover for the concat path. We read the
+  // asset back and compare bytes so a wrong offset/order would fail loudly.
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3]));
+      controller.enqueue(new Uint8Array([4, 5, 6]));
+      controller.enqueue(new Uint8Array([7, 8, 9]));
+      controller.close();
+    },
+  });
+  const res = await app.request(
+    new Request("http://localhost/api/assets?kind=file", {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }),
+  );
+  assert.equal(res.status, 201);
+  const asset = (await res.json()) as any;
+  assert.equal(asset.byteLength, 9);
+  const served = await app.request(`/a/${asset.id}`);
+  assert.deepEqual([...new Uint8Array(await served.arrayBuffer())], [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+});
+
 test("uploading to an unknown session 404s; serving a missing asset 404s", async () => {
   const app = makeApp();
   const res = await app.request(
