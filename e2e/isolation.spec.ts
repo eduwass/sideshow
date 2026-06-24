@@ -1,4 +1,4 @@
-import { expect, publish, test } from "./fixtures.ts";
+import { expect, publish, publishParts, test } from "./fixtures.ts";
 
 // The sandbox attribute (asserted across the part specs) is the *shape* of the
 // isolation; this spec asserts the *behavior* the project's core invariant
@@ -164,4 +164,54 @@ test("a top-level surface document loads in an opaque (sandboxed) origin", async
   // read the board's cookies/storage or reach a same-origin viewer window.
   const origin = await page.evaluate(() => window.origin);
   expect(origin).toBe("null");
+});
+
+// Rich parts (markdown/code/diff/terminal) now render server-side and are served
+// from /s/:id by real URL, with the SAME load-bearing `sandbox` CSP response
+// header as html parts (opaque origin on any load) plus a TIGHTER in-doc CSP
+// than html parts: no connect-src and no CDN/board script source, so even if a
+// renderer regression let agent markup through, a script could neither phone
+// home nor reach the board. This proves both: (a) agent markup in the source is
+// neutralized by the renderer (markdown-it html:false), and (b) the document is
+// opaque-origin with that tight CSP — defense in depth behind the escape.
+test("a rich part served from /s/:id is opaque-origin with a tight, exfil-proof CSP", async ({
+  page,
+  server,
+  request,
+}) => {
+  // A raw <script> in the markdown source that, if it ever executed, would flag
+  // the board. The renderer must escape it to text; the sandbox is the backstop.
+  const { id } = await publishParts(server.url, {
+    title: "rich-isolation",
+    agent: "e2e",
+    parts: [
+      {
+        kind: "markdown",
+        markdown: "# Heading\n\n<script>parent.document.body.dataset.pwned='1'</script>\n",
+      },
+    ],
+  });
+
+  // The response itself forces the opaque-origin sandbox (the load-bearing
+  // header — not just the iframe attribute, so a top-level open is contained).
+  const served = await request.get(`${server.url}/s/${id}?part=0`);
+  expect(served.headers()["content-security-policy"]).toBe("sandbox allow-scripts");
+  const docText = await served.text();
+  // The injected <script> was escaped, not emitted live...
+  expect(docText).not.toContain("<script>parent.document");
+  // ...and the in-doc rich CSP has NO connect-src at all (no exfil channel) and
+  // its script-src is inline-only — no board origin, no CDN — unlike an html
+  // part. (img-src does include the board origin so inline /a/:id images load;
+  // that's not a script/exfil vector.)
+  const meta = docText.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? "";
+  expect(meta).not.toContain("connect-src");
+  const scriptSrc = meta.match(/script-src ([^;]+)/)?.[1] ?? "";
+  expect(scriptSrc).toBe("'unsafe-inline'");
+
+  // Loaded top-level, the document is opaque-origin (window.origin === "null"),
+  // so even a hypothetical escaped script couldn't read board cookies/storage.
+  await page.goto(`${server.url}/s/${id}?part=0`);
+  await expect(page.locator("h1")).toHaveText("Heading"); // it rendered
+  expect(await page.evaluate(() => window.origin)).toBe("null");
+  expect(await page.evaluate(() => document.body.dataset.pwned)).toBeUndefined();
 });
