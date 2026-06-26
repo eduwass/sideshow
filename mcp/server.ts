@@ -100,6 +100,17 @@ server.registerTool(
 );
 
 server.registerTool(
+  "get_post",
+  {
+    description: MCP_TOOL_DESCRIPTIONS.getPost,
+    inputSchema: STDIO_MCP_INPUT_SCHEMAS.getPost,
+  },
+  async ({ id }) => {
+    return text(JSON.parse(await api(`/api/posts/${id}`)));
+  },
+);
+
+server.registerTool(
   "publish_surface",
   {
     description: MCP_TOOL_DESCRIPTIONS.publishSurfaceStdio,
@@ -243,6 +254,71 @@ server.registerTool(
     inputSchema: {},
   },
   async () => text(await api("/guide")),
+);
+
+server.registerTool(
+  "add_surface",
+  {
+    description: MCP_TOOL_DESCRIPTIONS.addSurface,
+    inputSchema: STDIO_MCP_INPUT_SCHEMAS.addSurface,
+  },
+  async ({ postId, surface, before, after }) => {
+    const updated = JSON.parse(
+      await api(`/api/posts/${postId}/surfaces`, {
+        method: "POST",
+        body: JSON.stringify({ surface, before, after }),
+      }),
+    );
+    return text({ ...updated, url: `${API}/p/${updated.id}` });
+  },
+);
+
+server.registerTool(
+  "edit_surface",
+  {
+    description: MCP_TOOL_DESCRIPTIONS.editSurface,
+    inputSchema: STDIO_MCP_INPUT_SCHEMAS.editSurface,
+  },
+  async ({ postId, target, surface, content, kits }) => {
+    const updated = JSON.parse(
+      await api(`/api/posts/${postId}/surfaces/${target}`, {
+        method: "PATCH",
+        body: JSON.stringify({ surface, content, kits }),
+      }),
+    );
+    return text({ ...updated, url: `${API}/p/${updated.id}` });
+  },
+);
+
+server.registerTool(
+  "remove_surface",
+  {
+    description: MCP_TOOL_DESCRIPTIONS.removeSurface,
+    inputSchema: STDIO_MCP_INPUT_SCHEMAS.removeSurface,
+  },
+  async ({ postId, target }) => {
+    const updated = JSON.parse(
+      await api(`/api/posts/${postId}/surfaces/${target}`, { method: "DELETE" }),
+    );
+    return text({ ...updated, url: `${API}/p/${updated.id}` });
+  },
+);
+
+server.registerTool(
+  "reorder_surfaces",
+  {
+    description: MCP_TOOL_DESCRIPTIONS.reorderSurfaces,
+    inputSchema: STDIO_MCP_INPUT_SCHEMAS.reorderSurfaces,
+  },
+  async ({ postId, order }) => {
+    const updated = JSON.parse(
+      await api(`/api/posts/${postId}/surfaces`, {
+        method: "PATCH",
+        body: JSON.stringify({ order }),
+      }),
+    );
+    return text({ ...updated, url: `${API}/p/${updated.id}` });
+  },
 );
 
 await server.connect(new StdioServerTransport());

@@ -71,6 +71,7 @@ const d = {
     "code surface: language id (ts, js, python, go, rust, …); omit or use 'text' for plain monospace",
   surfaceLineStart:
     "code surface: 1-based starting line number for an excerpt (the viewer numbers from here instead of 1)",
+  surfaceTarget: "Surface id or 0-based index within the post",
 };
 
 const MCP_SURFACES_DESCRIPTION =
@@ -162,6 +163,8 @@ export const MCP_TOOL_DESCRIPTIONS = {
     "Revise a post in place (same card, new version). Prefer this over publishing a near-duplicate. Pass the full replacement surfaces array. If the result includes userFeedback, read it.",
   listPostsHttp: "List posts — pass a session id to scope, or omit for all sessions.",
   listPostsStdio: "List posts in this conversation's session.",
+  getPost:
+    "Fetch a single post by id — returns the full post object including surfaces (with their ids), version, and history. Use this to recover surface ids for per-surface operations (edit_surface, remove_surface, reorder_surfaces) after a context compaction, or to inspect a post's current state before editing.",
   publishSurfaceHttp:
     "Deprecated alias of publish_post — Publish a post to the user's sideshow workspace. A post is an ordered list of surfaces (html, markdown, mermaid, diff, image, trace, terminal, json, code). Returns the post id, view URL, and sessionId — pass sessionId as `session` on later calls. On your first publish, pass sessionTitle naming the task. If the result includes userFeedback, those are new comments from the user. Call get_design_guide first if you have not this session.",
   publishSurfaceStdio:
@@ -184,6 +187,14 @@ export const MCP_TOOL_DESCRIPTIONS = {
     "Upload a binary asset (image, trace file, any file) and get back its id and URL. base64-encode the bytes in `data`. Then reference it: put {kind:'image', assetId} or {kind:'trace', assetId} in a post's surfaces, or embed the returned url in an html surface (<img src=\"...\">). Attached to this conversation's session.",
   getDesignGuide:
     "Fetch the design contract: post surfaces, html fragment rules, theme CSS variables, CDN allowlist, and the interactivity bridge. Call once per session before publishing.",
+  addSurface:
+    "Append a surface to an existing post (same card, new version). Optionally pass before/after (surface id or 0-based index) to control insert position; default is append at the end. If the result includes userFeedback, read it.",
+  editSurface:
+    "Replace or content-edit a single surface in a post (same card, new version). Pass `surface` for a full replacement, or `content` for a content-only update that preserves the surface kind and extra fields (language, cols, layout, etc.). `target` is a surface id or 0-based index. If the result includes userFeedback, read it.",
+  removeSurface:
+    "Remove a single surface from a post (same card, new version). `target` is a surface id or 0-based index. Rejects if it's the last surface (posts need at least one). If the result includes userFeedback, read it.",
+  reorderSurfaces:
+    "Reorder the surfaces in a post (same card, new version). Pass an array of surface ids or 0-based indices in the desired order; the length must match the current surface count. If the result includes userFeedback, read it.",
 } as const;
 
 export const HTTP_MCP_TOOLS = [
@@ -223,6 +234,17 @@ export const HTTP_MCP_TOOLS = [
       properties: {
         session: { type: "string", description: "Optional session id to scope the list" },
       },
+    },
+  },
+  {
+    name: "get_post",
+    description: MCP_TOOL_DESCRIPTIONS.getPost,
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: d.surfaceId },
+      },
+      required: ["id"],
     },
   },
   {
@@ -344,6 +366,66 @@ export const HTTP_MCP_TOOLS = [
     description: MCP_TOOL_DESCRIPTIONS.getDesignGuide,
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "add_surface",
+    description: MCP_TOOL_DESCRIPTIONS.addSurface,
+    inputSchema: {
+      type: "object",
+      properties: {
+        postId: { type: "string", description: d.surfaceId },
+        surface: MCP_SURFACE_JSON_SCHEMA,
+        before: { type: "string", description: d.surfaceTarget },
+        after: { type: "string", description: d.surfaceTarget },
+      },
+      required: ["postId", "surface"],
+    },
+  },
+  {
+    name: "edit_surface",
+    description: MCP_TOOL_DESCRIPTIONS.editSurface,
+    inputSchema: {
+      type: "object",
+      properties: {
+        postId: { type: "string", description: d.surfaceId },
+        target: { type: "string", description: d.surfaceTarget },
+        surface: MCP_SURFACE_JSON_SCHEMA,
+        content: {
+          type: "string",
+          description: "Raw content to slot into the existing surface's content field",
+        },
+        kits: { type: "array", items: { type: "string" }, description: d.surfaceKits },
+      },
+      required: ["postId", "target"],
+    },
+  },
+  {
+    name: "remove_surface",
+    description: MCP_TOOL_DESCRIPTIONS.removeSurface,
+    inputSchema: {
+      type: "object",
+      properties: {
+        postId: { type: "string", description: d.surfaceId },
+        target: { type: "string", description: d.surfaceTarget },
+      },
+      required: ["postId", "target"],
+    },
+  },
+  {
+    name: "reorder_surfaces",
+    description: MCP_TOOL_DESCRIPTIONS.reorderSurfaces,
+    inputSchema: {
+      type: "object",
+      properties: {
+        postId: { type: "string", description: d.surfaceId },
+        order: {
+          type: "array",
+          items: { oneOf: [{ type: "string" }, { type: "number" }] },
+          description: "Surface ids or 0-based indices in the desired order",
+        },
+      },
+      required: ["postId", "order"],
+    },
+  },
 ] as const;
 
 const diffFileSchema = z.object({
@@ -401,6 +483,9 @@ export const STDIO_MCP_INPUT_SCHEMAS = {
     surfaces: z.array(mcpPartSchema).optional().describe(d.replacementParts),
     title: z.string().optional().describe(d.replacementTitle),
   },
+  getPost: {
+    id: z.string().describe(d.surfaceId),
+  },
   publishSurface: {
     title: z.string().describe(d.title),
     parts: z.array(mcpPartSchema).describe(MCP_SURFACES_DESCRIPTION),
@@ -444,5 +529,31 @@ export const STDIO_MCP_INPUT_SCHEMAS = {
       .enum(["image", "trace", "file"])
       .optional()
       .describe("Inferred from contentType if omitted"),
+  },
+  addSurface: {
+    postId: z.string().describe(d.surfaceId),
+    surface: mcpPartSchema.describe("Surface to append"),
+    before: z.string().optional().describe(d.surfaceTarget),
+    after: z.string().optional().describe(d.surfaceTarget),
+  },
+  editSurface: {
+    postId: z.string().describe(d.surfaceId),
+    target: z.string().describe(d.surfaceTarget),
+    surface: mcpPartSchema.optional().describe("Full replacement surface"),
+    content: z
+      .string()
+      .optional()
+      .describe("Raw content to slot into the existing surface's content field"),
+    kits: z.array(z.string()).optional().describe(d.surfaceKits),
+  },
+  removeSurface: {
+    postId: z.string().describe(d.surfaceId),
+    target: z.string().describe(d.surfaceTarget),
+  },
+  reorderSurfaces: {
+    postId: z.string().describe(d.surfaceId),
+    order: z
+      .array(z.union([z.string(), z.number()]))
+      .describe("Surface ids or 0-based indices in the desired order"),
   },
 } as const;
