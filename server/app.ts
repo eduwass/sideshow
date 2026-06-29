@@ -222,6 +222,123 @@ const surfaceMeta = (s: Post) => ({
   parts: stripParts(s.surfaces),
 });
 
+// Cap inline preview fields so /api/surfaces/recent stays cheap while still
+// carrying a real clipped preview. Unlike stripParts (which empties html for the
+// card list), this TRUNCATES large inline payloads so a feed card can render an
+// honest preview. Assets stay by-reference (assetId). When a field is clipped we
+// set `truncated:true` on that part so a client can offer a "view full post"
+// affordance honestly.
+const PART_TEXT_CAP = 8_000; // chars; ~a screenful, enough for a clipped preview
+const TRACE_STEP_PREVIEW_LIMIT = 25;
+type CappedSurface = Surface & { truncated?: true };
+function capText(text: string): { value: string; truncated: boolean } {
+  return text.length > PART_TEXT_CAP
+    ? { value: text.slice(0, PART_TEXT_CAP), truncated: true }
+    : { value: text, truncated: false };
+}
+function capParts(parts: Surface[]): CappedSurface[] {
+  return parts.map((p): CappedSurface => {
+    switch (p.kind) {
+      case "html": {
+        const { value, truncated } = capText(p.html);
+        return truncated ? { ...p, html: value, truncated: true } : p;
+      }
+      case "markdown": {
+        const { value, truncated } = capText(p.markdown);
+        return truncated ? { ...p, markdown: value, truncated: true } : p;
+      }
+      case "mermaid": {
+        const { value, truncated } = capText(p.mermaid);
+        return truncated ? { ...p, mermaid: value, truncated: true } : p;
+      }
+      case "code": {
+        const { value, truncated } = capText(p.code);
+        return truncated ? { ...p, code: value, truncated: true } : p;
+      }
+      case "terminal": {
+        const { value, truncated } = capText(p.text);
+        return truncated ? { ...p, text: value, truncated: true } : p;
+      }
+      case "diff": {
+        let truncated = false;
+        const next: CappedSurface = { ...p };
+        if (p.patch !== undefined) {
+          const capped = capText(p.patch);
+          next.patch = capped.value;
+          truncated ||= capped.truncated;
+        }
+        if (p.files !== undefined) {
+          next.files = p.files.map((file) => {
+            const before = capText(file.before);
+            const after = capText(file.after);
+            const filename = capText(file.filename);
+            const language = file.language ? capText(file.language) : undefined;
+            truncated ||= before.truncated || after.truncated || filename.truncated;
+            if (language) truncated ||= language.truncated;
+            return {
+              ...file,
+              filename: filename.value,
+              before: before.value,
+              after: after.value,
+              ...(language && { language: language.value }),
+            };
+          });
+        }
+        return truncated ? { ...next, truncated: true } : p;
+      }
+      case "image": {
+        const alt = p.alt ? capText(p.alt) : undefined;
+        const caption = p.caption ? capText(p.caption) : undefined;
+        const truncated = !!alt?.truncated || !!caption?.truncated;
+        return truncated
+          ? {
+              ...p,
+              ...(alt && { alt: alt.value }),
+              ...(caption && { caption: caption.value }),
+              truncated: true,
+            }
+          : p;
+      }
+      case "trace": {
+        let truncated = false;
+        const title = p.title ? capText(p.title) : undefined;
+        if (title?.truncated) truncated = true;
+        const steps = p.steps?.slice(0, TRACE_STEP_PREVIEW_LIMIT).map((step) => {
+          const label = capText(step.label);
+          const kind = step.kind ? capText(step.kind) : undefined;
+          const detail = step.detail ? capText(step.detail) : undefined;
+          const ts = step.ts ? capText(step.ts) : undefined;
+          truncated ||=
+            label.truncated || !!kind?.truncated || !!detail?.truncated || !!ts?.truncated;
+          return {
+            label: label.value,
+            ...(kind && { kind: kind.value }),
+            ...(detail && { detail: detail.value }),
+            ...(ts && { ts: ts.value }),
+          };
+        });
+        if ((p.steps?.length ?? 0) > TRACE_STEP_PREVIEW_LIMIT) truncated = true;
+        return truncated
+          ? { ...p, ...(title && { title: title.value }), ...(steps && { steps }), truncated: true }
+          : p;
+      }
+      case "json": {
+        const serialized = JSON.stringify(p.data);
+        const { value, truncated } = capText(serialized);
+        return truncated ? { ...p, data: value, truncated: true } : p;
+      }
+      default:
+        return p;
+    }
+  });
+}
+
+function parseRecentLimit(raw: string | undefined): number {
+  const parsed = Number(raw ?? "20");
+  const limit = Number.isFinite(parsed) && parsed !== 0 ? Math.trunc(parsed) : 20;
+  return Math.min(Math.max(limit, 1), 100);
+}
+
 function isPublicReadAllowed(path: string, mode: PublicReadMode): boolean {
   if (mode === "full") return true;
   if (path.startsWith("/session/")) return true;
@@ -229,6 +346,10 @@ function isPublicReadAllowed(path: string, mode: PublicReadMode): boolean {
   if (path.startsWith("/p/")) return true;
   if (path.startsWith("/a/")) return true;
   if (path.startsWith("/api/sessions/")) return true;
+  // /api/surfaces/recent is the cross-session feed source — gate it like
+  // /api/sessions (NOT public on a session-scoped board), not like the
+  // per-surface /api/surfaces/:id reads below.
+  if (path === "/api/surfaces/recent") return false;
   if (path.startsWith("/api/surfaces/")) return true;
   if (path.startsWith("/api/posts/")) return true;
   if (path.startsWith("/api/snippets/")) return true;
@@ -1003,6 +1124,47 @@ export function createApp({
     const counts = new Map<string, number>();
     for (const s of surfaces) counts.set(s.sessionId, (counts.get(s.sessionId) ?? 0) + 1);
     return c.json(sessions.map((s) => ({ ...s, surfaceCount: counts.get(s.id) ?? 0 })));
+  });
+
+  // --- recent surfaces (post-grained feed source) ---
+  //
+  // The N most-recently-updated posts across ALL sessions, newest first — one
+  // row per post (post-grained), distinct from the session-grained GET
+  // /api/sessions. This is the source a cross-session "latest posts" feed needs
+  // (Org Home, a per-workspace Home): each item carries its session id/title +
+  // agent for the feed card, the post's part kinds, and capped part previews.
+  //
+  // Previews are bounded by capParts (large inline text clipped to PART_TEXT_CAP
+  // with truncated:true); images travel as plain assetId refs (served at /a/:id),
+  // so the response stays cheap. Same auth as /api/sessions — see
+  // isPublicReadAllowed, which intentionally does NOT expose this path on a
+  // session-scoped publicRead board.
+  app.get("/api/surfaces/recent", async (c) => {
+    const limit = parseRecentLimit(c.req.query("limit"));
+    const posts = await store.listRecentPosts(limit);
+    // Resolve each post's session once (agent + session title for the feed card).
+    const sessions = new Map<string, Session | null>();
+    for (const p of posts) {
+      if (!sessions.has(p.sessionId))
+        sessions.set(p.sessionId, await store.getSession(p.sessionId));
+    }
+    return c.json(
+      posts.map((p) => {
+        const s = sessions.get(p.sessionId);
+        return {
+          id: p.id,
+          sessionId: p.sessionId,
+          sessionTitle: s?.title ?? null,
+          agent: s?.agent ?? null,
+          title: p.title,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+          version: p.version,
+          partKinds: p.surfaces.map((x) => x.kind),
+          parts: capParts(p.surfaces),
+        };
+      }),
+    );
   });
 
   app.post("/api/sessions", async (c) => {
