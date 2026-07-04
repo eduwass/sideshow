@@ -230,6 +230,10 @@ test("publishes a combined html+diff surface; /s server-renders both surfaces op
     assert.match(csp, /\bsandbox\b/);
     assert.match(csp, /\ballow-scripts\b/);
     assert.doesNotMatch(csp, /allow-same-origin/);
+    // Surface docs are MEANT to be framed by the viewer, so they must never pick
+    // up the viewer shell's anti-clickjacking frame-ancestors (that would refuse
+    // the embedding iframe). The two CSPs are mutually exclusive by construction.
+    assert.doesNotMatch(csp, /frame-ancestors/);
   }
 });
 
@@ -253,7 +257,12 @@ test("GET /s/:id serves the viewer shell with link-preview metadata", async () =
   const page = await app.request(`https://board.test/s/${surface.id}`);
   assert.equal(page.status, 200);
   assert.ok(page.headers.get("content-type")?.includes("text/html"));
-  assert.equal(page.headers.get("content-security-policy"), null);
+  // The trusted viewer shell refuses cross-origin framing (anti-clickjacking);
+  // it carries frame-ancestors only, never the sandbox CSP the /s/:id?part=N
+  // surface documents use.
+  const shellCsp = page.headers.get("content-security-policy") ?? "";
+  assert.match(shellCsp, /frame-ancestors 'self'/);
+  assert.doesNotMatch(shellCsp, /\bsandbox\b/);
   const body = await page.text();
   assert.ok(body.includes("viewer"), "should serve the trusted viewer shell");
   assert.doesNotMatch(body, /<p>diagram<\/p>/, "should not inline agent HTML");
@@ -279,6 +288,14 @@ test("GET /session/:id serves the viewer shell with the session title", async ()
   const page = await app.request(`/session/${surface.sessionId}`);
   assert.equal(page.status, 200);
   assert.ok(page.headers.get("content-type")?.includes("text/html"));
+  // Every viewer-HTML route (here, `/` and `/session/:id`) is anti-clickjacking
+  // framed, sharing the one chokepoint (configuredViewerHtml).
+  assert.match(page.headers.get("content-security-policy") ?? "", /frame-ancestors 'self'/);
+  const root = await app.request("/");
+  assert.match(root.headers.get("content-security-policy") ?? "", /frame-ancestors 'self'/);
+  // The nested post-permalink alias shares the same configuredViewerHtml chokepoint.
+  const aliased = await app.request(`/session/${surface.sessionId}/p/${surface.id}`);
+  assert.match(aliased.headers.get("content-security-policy") ?? "", /frame-ancestors 'self'/);
   const body = await page.text();
   assert.ok(body.includes("viewer"), "should serve the trusted viewer shell");
   assert.match(body, /<title>Auth refactor · sideshow<\/title>/);
