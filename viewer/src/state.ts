@@ -12,9 +12,11 @@ import {
   type Post,
   type TraceStep,
   type VersionInfo,
+  type ViewerPost,
 } from "./api.ts";
 import { host, root, type Route } from "./host.ts";
 import { applyTheme } from "./theme.ts";
+import { compactViewerPost, viewerPostFromDetail } from "./viewerPost.ts";
 
 // --- URL routing ---
 // The host owns the URL. The engine renders whatever route host.router.get()
@@ -75,7 +77,7 @@ export const selected = selectedState;
 const [standaloneState, setStandaloneInternal] = createSignal<Post | null>(null);
 export const standalonePost = standaloneState;
 export const [unread, setUnread] = createSignal<ReadonlySet<string>>(new Set<string>());
-const [postsStore, setPostsInternal] = createStore<Post[]>([]);
+const [postsStore, setPostsInternal] = createStore<ViewerPost[]>([]);
 export const posts = postsStore;
 const [commentsState, setCommentsInternal] = createSignal<ViewComment[]>([]);
 export const comments = commentsState;
@@ -279,27 +281,33 @@ export async function refreshSessions(targetPostId?: string | null) {
   }
 }
 
-function isHydratedPost(value: unknown): value is Post {
-  return !!value && typeof value === "object" && Array.isArray((value as Post).history);
+async function fetchViewerPost(id: string): Promise<ViewerPost | null> {
+  const compact = await api<unknown>(`/api/posts/${encodeURIComponent(id)}/viewer`).catch(
+    () => null,
+  );
+  return compactViewerPost(compact);
 }
 
-async function fetchSessionPostDetails(id: string): Promise<Post[]> {
+async function fetchSessionPostDetails(id: string): Promise<ViewerPost[]> {
   const rows = await api<unknown[]>(`/api/sessions/${id}/posts?hydrate=1`).catch(() => []);
-  const hydrated: Post[] = [];
-  for (const row of rows) {
-    if (isHydratedPost(row)) hydrated.push(row);
-  }
-  if (hydrated.length === rows.length) return hydrated;
+  const hydrated = rows.map(compactViewerPost);
+  if (hydrated.every((post): post is ViewerPost => post !== null)) return hydrated;
+  // Compatibility fallback for servers old enough to ignore `?hydrate=1` and
+  // return list rows. This path runs only during initial/reconnect hydration;
+  // live updates never fall back to the full-history detail endpoint.
   const details = await Promise.all(
-    rows.map((row) =>
-      row && typeof row === "object" && typeof (row as { id?: unknown }).id === "string"
-        ? api<Post>(`/api/posts/${encodeURIComponent((row as { id: string }).id)}`).catch(
-            () => null,
-          )
-        : null,
-    ),
+    rows.map(async (row, index) => {
+      if (hydrated[index]) return hydrated[index];
+      if (!row || typeof row !== "object" || typeof (row as { id?: unknown }).id !== "string") {
+        return null;
+      }
+      const detail = await api<Post>(
+        `/api/posts/${encodeURIComponent((row as { id: string }).id)}`,
+      ).catch(() => null);
+      return detail ? viewerPostFromDetail(detail) : null;
+    }),
   );
-  return details.filter((post): post is Post => post !== null);
+  return details.filter((post): post is ViewerPost => post !== null);
 }
 
 export async function select(
@@ -403,7 +411,7 @@ export async function selectAdjacent(delta: 1 | -1) {
 
 // Fetch a post and insert/update it in the open session's stream.
 async function upsertPost(id: string, { scroll = true } = {}) {
-  const s = await api<Post>(`/api/posts/${id}`).catch(() => null);
+  const s = await fetchViewerPost(id);
   if (!s || s.sessionId !== selected()) return;
   const idx = posts.findIndex((x) => x.id === s.id);
   if (idx >= 0) {
