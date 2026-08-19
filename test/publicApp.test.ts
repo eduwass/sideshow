@@ -1819,23 +1819,14 @@ test("unknown, revoked and expired slugs render one byte-identical page", async 
 
 // --- 18. the neutral viewer (issue #7) ----------------------------------
 
-// The product name may appear in the served page only as protocol: the scheme
-// override's localStorage key and the surface bridge's postMessage marker, both
-// inside the page's own inline script and invisible to a reader.
-const SCRIPT_BLOCK = /<script[^>]*>([\s\S]*?)<\/script>/;
-
+// The product name must not appear in a served client page AT ALL — not in the
+// markup and not in an internal identifier inside the inline script. This used
+// to allow a handful of storage keys and the surface bridge's postMessage
+// marker through; a production smoke test flagged them, so the storage keys are
+// now neutral and the page trusts frame IDENTITY rather than the marker (which
+// was always the real control).
 function assertNeutralDocument(html: string, label: string) {
-  const markup = html.replace(SCRIPT_BLOCK, "<script></script>");
-  assert.equal(/sideshow/i.test(markup), false, `${label}: product name in the markup`);
-  const script = SCRIPT_BLOCK.exec(html)?.[1] ?? "";
-  const tokens = [...script.matchAll(/[\w$]*sideshow[\w$.]*/gi)].map((m) => m[0]);
-  assert.deepEqual(
-    [...new Set(tokens)],
-    tokens.length
-      ? ["sideshow.scheme", "__sideshow", "sideshow.feedback.name", "sideshow.feedback.email"]
-      : [],
-    `${label}: unexpected product name in the inline script`,
-  );
+  assert.equal(/sideshow/i.test(html), false, `${label}: product name in the page`);
   for (const marker of [
     "/api/sessions",
     "/api/posts",

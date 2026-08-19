@@ -6,6 +6,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "sideshow-public",
   "main": "workers/publicService.ts",
+  // The production hostname. `custom_domain` makes Cloudflare manage the DNS
+  // record and certificate for it, so the hostname is reproducible from this
+  // file rather than clicked in a dashboard.
+  "routes": [{ "pattern": "show.eduwass.com", "custom_domain": true }],
   "compatibility_date": "2026-06-01",
   "durable_objects": {
     "bindings": [{ "name": "PUBLICATIONS", "class_name": "SideshowPublications" }],

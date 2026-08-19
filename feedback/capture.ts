@@ -5,7 +5,10 @@
 // a selection across that boundary. Rather than weaken the sandbox (which is
 // what keeps agent-authored markup away from the workspace API), the capture
 // runs in the frame and reports through the EXISTING postMessage bridge — the
-// same `{__sideshow: true, type}` convention the resize/open-link messages use.
+// same `{__pub: true, type}` convention the parent uses for this channel. The
+// marker is deliberately neutral rather than the surface bridge's own
+// `__sideshow`: the parent side of it is written into the client-facing page,
+// which must not name the product anywhere, not even in an identifier.
 // It never touches the network: `connect-src` stays absent for rich surfaces,
 // and everything captured here goes to the parent, which does the submitting.
 //
@@ -47,7 +50,7 @@ interface HighlightSourceLike {
 }
 
 const send = (message: Record<string, unknown>): void => {
-  parent.postMessage({ __sideshow: true, ...message }, "*");
+  parent.postMessage({ __pub: true, ...message }, "*");
 };
 
 // The DOM reduced to the tag/text tree anchorText.ts indexes. Only elements and
@@ -252,8 +255,8 @@ document.addEventListener("click", onClick, true);
 window.addEventListener("message", (event: MessageEvent) => {
   // Only this frame's embedder may drive capture.
   if (event.source !== parent) return;
-  const data = event.data as { __sideshow?: unknown; type?: unknown; mode?: unknown } | null;
-  if (!data || data.__sideshow !== true) return;
+  const data = event.data as { __pub?: unknown; type?: unknown; mode?: unknown } | null;
+  if (!data || data.__pub !== true) return;
   if (data.type === "feedback-arm") arm(data.mode === "point");
   else if (data.type === "feedback-clear") clearPending();
   else if (data.type === "feedback-restore") {
