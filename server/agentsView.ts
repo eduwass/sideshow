@@ -44,7 +44,11 @@ export async function resolvePostProvenance(
     const search = await request(`${apiOrigin}/api/v1/search/content?${query}`);
     if (!search.ok) return null;
     const matches = ((await search.json()) as { matches?: SearchMatch[] }).matches ?? [];
-    const createdAt = Date.parse(post.createdAt);
+    const postTimes = [Date.parse(post.createdAt), Date.parse(post.updatedAt)].filter(
+      Number.isFinite,
+    );
+    const distance = (match: SearchMatch) =>
+      Math.min(...postTimes.map((timestamp) => Math.abs(Date.parse(match.timestamp) - timestamp)));
     const candidates = matches.filter(
       (match) =>
         match.role === "assistant" &&
@@ -54,14 +58,10 @@ export async function resolvePostProvenance(
     candidates.sort((a, b) => {
       const preferred = (match: SearchMatch) =>
         /sideshow|publish/i.test(match.tool_name ?? "") ? 0 : 1;
-      return (
-        preferred(a) - preferred(b) ||
-        Math.abs(Date.parse(a.timestamp) - createdAt) -
-          Math.abs(Date.parse(b.timestamp) - createdAt)
-      );
+      return preferred(a) - preferred(b) || distance(a) - distance(b);
     });
     const match = candidates[0];
-    if (!match || Math.abs(Date.parse(match.timestamp) - createdAt) > 5 * 60_000) return null;
+    if (!match || distance(match) > 5 * 60_000) return null;
 
     const messagesResponse = await request(
       `${apiOrigin}/api/v1/sessions/${encodeURIComponent(match.session_id)}/messages?around=${match.ordinal}&before=50&after=0`,
