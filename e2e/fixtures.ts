@@ -161,6 +161,27 @@ export async function seedPublication(
   };
 }
 
+/** Everything a publication's owner can see of what clients sent. */
+export interface StoredFeedback {
+  id: string;
+  note: string;
+  name: string;
+  email: string | null;
+  snapshotId: string;
+  anchor: Record<string, unknown>;
+}
+
+export async function listFeedback(
+  server: PublicServer,
+  publicationId: string,
+): Promise<StoredFeedback[]> {
+  return owner<StoredFeedback[]>(
+    server,
+    "GET",
+    `/api/owner/publications/${publicationId}/feedback`,
+  );
+}
+
 /** Upload one asset to the public runtime so a snapshot can pin it. */
 export async function uploadPublicAsset(
   server: PublicServer,

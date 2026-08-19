@@ -324,7 +324,7 @@ test("every surface kind survives a collection with its own item and kind", asyn
   assert.equal(body.includes("allow-same-origin"), false);
   for (const item of [0, 1, 2, 3, 4, 5]) {
     assert.ok(
-      body.includes(`src="/api/v/${result.slug}/s/${item}/0"`),
+      body.includes(`src="/api/v/${result.slug}/s/${item}/0?fb=1"`),
       `item ${item} is not an iframe`,
     );
   }

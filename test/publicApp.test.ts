@@ -7,6 +7,8 @@ import { hashPassword } from "../server/passwords.ts";
 import { encodeBase64 } from "../server/base64.ts";
 import {
   createPublicApp,
+  MAX_FEEDBACK_NAME_LENGTH,
+  MAX_FEEDBACK_NOTE_LENGTH,
   MAX_FEEDBACK_QUOTE_LENGTH,
   MAX_PUBLIC_BODY_BYTES,
   normalizeAnchor,
@@ -826,6 +828,161 @@ test("feedback is rate limited", async () => {
   assert.ok(Number(limited.headers.get("retry-after")) >= 1);
 });
 
+test("only the owner can read feedback back, and no public route can", async () => {
+  const { app, snapshot, publication, link } = await seed();
+  await post(app, "/api/v/demo-slug/feedback", {
+    name: "Dana",
+    note: "the second chart is off",
+    snapshotId: snapshot.id,
+    anchor: pointAnchor,
+  });
+
+  // Unauthenticated: the owner API is a closed door.
+  assert.equal((await get(app, `/api/owner/publications/${publication.id}/feedback`)).status, 401);
+  // And there is no public route that reads a submission back — a client can
+  // never see another client's note.
+  for (const path of [
+    "/api/v/demo-slug/feedback",
+    `/api/v/demo-slug/feedback/${publication.id}`,
+    "/api/v/demo-slug/comments",
+  ]) {
+    assert.equal((await get(app, path)).status, 404, path);
+  }
+
+  const owned = get(app, `/api/owner/publications/${publication.id}/feedback`, {
+    authorization: `Bearer ${OWNER_TOKEN}`,
+  });
+  const list = (await (await owned).json()) as { note: string; shareLinkId: string }[];
+  assert.equal(list.length, 1);
+  assert.equal(list[0]?.note, "the second chart is off");
+  assert.equal(list[0]?.shareLinkId, link.id);
+
+  // Filters narrow it; a publication that does not exist is a 404.
+  const filtered = await get(
+    app,
+    `/api/owner/publications/${publication.id}/feedback?status=resolved&snapshotId=${snapshot.id}`,
+    { authorization: `Bearer ${OWNER_TOKEN}` },
+  );
+  assert.deepEqual(await filtered.json(), []);
+  assert.equal(
+    (
+      await get(app, "/api/owner/publications/nope/feedback", {
+        authorization: `Bearer ${OWNER_TOKEN}`,
+      })
+    ).status,
+    404,
+  );
+});
+
+test("oversized text is bounded, never stored whole", async () => {
+  const { app, publications, snapshot } = await seed();
+  const res = await post(app, "/api/v/demo-slug/feedback", {
+    name: "D".repeat(500),
+    email: "e".repeat(500),
+    note: "n".repeat(9000),
+    snapshotId: snapshot.id,
+    anchor: {
+      kind: "text",
+      itemIndex: 0,
+      surfaceIndex: MARKDOWN,
+      quote: "q".repeat(5000),
+      prefix: "p".repeat(900),
+      suffix: "s".repeat(900),
+      startMeta: { parentTagName: "P".repeat(200), parentIndex: 0, textOffset: 0 },
+      endMeta: { parentTagName: "P", parentIndex: 0, textOffset: 10 },
+    },
+  });
+  assert.equal(res.status, 201);
+  const [stored] = await publications.listFeedback({});
+  assert.ok(stored);
+  assert.equal(stored.note.length, MAX_FEEDBACK_NOTE_LENGTH);
+  assert.equal(stored.name.length, MAX_FEEDBACK_NAME_LENGTH);
+  assert.equal(stored.email?.length, MAX_FEEDBACK_NAME_LENGTH);
+  assert.equal(stored.anchor.kind, "text");
+  if (stored.anchor.kind !== "text") return;
+  assert.equal(stored.anchor.quote.length, MAX_FEEDBACK_QUOTE_LENGTH);
+  assert.equal(stored.anchor.prefix?.length, 200);
+  assert.equal(stored.anchor.suffix?.length, 200);
+  assert.equal(stored.anchor.startMeta?.parentTagName.length, 32);
+});
+
+test("two identical quotes in one surface stay distinguishable anchors", async () => {
+  const { app, publications, snapshot } = await seed();
+  const base = {
+    name: "Dana",
+    note: "this line again",
+    snapshotId: snapshot.id,
+  };
+  const quote = "Some prose";
+  for (const parentIndex of [0, 1]) {
+    const res = await post(app, "/api/v/demo-slug/feedback", {
+      ...base,
+      anchor: {
+        kind: "text",
+        itemIndex: 0,
+        surfaceIndex: MARKDOWN,
+        quote,
+        startMeta: { parentTagName: "P", parentIndex, textOffset: 4 },
+        endMeta: { parentTagName: "P", parentIndex, textOffset: 14 },
+      },
+    });
+    assert.equal(res.status, 201);
+  }
+  const stored = await publications.listFeedback({});
+  assert.equal(stored.length, 2);
+  const positions = stored.map((f) =>
+    f.anchor.kind === "text" ? f.anchor.startMeta?.parentIndex : null,
+  );
+  // Same words, different structural positions — the second submission is not
+  // silently the first one over again.
+  assert.deepEqual([...positions].sort(), [0, 1]);
+  assert.deepEqual(
+    stored.map((f) => (f.anchor.kind === "text" ? f.anchor.quote : null)),
+    [quote, quote],
+  );
+});
+
+test("a text anchor keeps its surface identity and drops unusable structural metadata", () => {
+  const snapshot = {
+    items: [
+      {
+        postId: "p",
+        title: "t",
+        version: 1,
+        surfaces: [{ kind: "html", html: "<p>x</p>", id: "surf-1" }],
+      },
+    ],
+  } as unknown as Snapshot;
+  const anchor = normalizeAnchor(
+    {
+      kind: "text",
+      itemIndex: 0,
+      surfaceIndex: 0,
+      surfaceId: "surf-1",
+      quote: "x",
+      startMeta: { parentTagName: "P", parentIndex: 0, textOffset: 0 },
+      // Not a whole number of characters — unusable, so it is not stored.
+      endMeta: { parentTagName: "P", parentIndex: 0, textOffset: 1.5 },
+    },
+    snapshot,
+  );
+  assert.ok(anchor);
+  assert.equal(anchor.kind, "text");
+  if (anchor.kind !== "text") return;
+  assert.equal(anchor.surfaceId, "surf-1");
+  assert.ok(anchor.startMeta);
+  assert.equal(anchor.endMeta, undefined);
+  // A surface index that is not in the snapshot never becomes an anchor at all.
+  assert.equal(
+    normalizeAnchor({ kind: "text", itemIndex: 0, surfaceIndex: 3, quote: "x" }, snapshot),
+    null,
+  );
+  assert.equal(
+    normalizeAnchor({ kind: "point", itemIndex: 1, surfaceIndex: 0, x: 0, y: 0 }, snapshot),
+    null,
+  );
+});
+
 // --- 7. surface documents -----------------------------------------------
 
 test("every sandboxed surface is served as its own document under a sandbox CSP", async () => {
@@ -1557,7 +1714,7 @@ test("GET /v/:slug serves the publication under a strict nonce CSP", async () =>
   assert.match(html, /<div class="who">Edu<\/div>/);
   // The seeded html surface is referenced, never inlined.
   assert.equal(html.includes(HTML_MARKUP), false);
-  assert.match(html, /src="\/api\/v\/demo-slug\/s\/0\/0"/);
+  assert.match(html, /src="\/api\/v\/demo-slug\/s\/0\/0\?fb=1"/);
   assert.ok(html.includes(snapshot.id), "trackOpens wires the snapshot id into the page");
 
   // Two responses never reuse a nonce.
@@ -1620,7 +1777,9 @@ function assertNeutralDocument(html: string, label: string) {
   const tokens = [...script.matchAll(/[\w$]*sideshow[\w$.]*/gi)].map((m) => m[0]);
   assert.deepEqual(
     [...new Set(tokens)],
-    tokens.length ? ["sideshow.scheme", "__sideshow"] : [],
+    tokens.length
+      ? ["sideshow.scheme", "__sideshow", "sideshow.feedback.name", "sideshow.feedback.email"]
+      : [],
     `${label}: unexpected product name in the inline script`,
   );
   for (const marker of [
@@ -1847,7 +2006,10 @@ test("a script inside an html surface exists only in the sandboxed document", as
   const page = await (await get(app, "/v/script-slug")).text();
   assert.equal(page.includes("__pwned"), false, "agent script reached the trusted page");
   assert.equal(page.split("<script").length - 1, 1, "only the page's own nonced script");
-  assert.match(page, /<iframe data-surface sandbox="allow-scripts allow-popups"/);
+  assert.match(
+    page,
+    /<iframe data-surface data-item="0" data-si="0" sandbox="allow-scripts allow-popups"/,
+  );
   assert.equal(page.includes("allow-same-origin"), false);
 
   const document = await get(app, "/api/v/script-slug/s/0/0");

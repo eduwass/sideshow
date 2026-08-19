@@ -81,6 +81,58 @@ section.item > h2{font-size:17px;margin:0 0 12px;font-weight:600}
 .gate button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:8px;background:var(--accent);color:var(--bg);font-size:15px;font-weight:600;cursor:pointer}
 .gate .error{color:#c0392b;font-size:13px;margin-top:10px;min-height:18px}
 @media (max-width:600px){ .wrap{padding:20px 14px 72px} h1{font-size:22px} }
+
+/* Feedback composer (issue #9). Fixed to the viewport so it is reachable from
+   anywhere in a long publication, and a full-width sheet on a phone. Widths are
+   capped against the containing block (the viewport, scrollbar excluded) rather
+   than 100vw, so the panel can never push the page into horizontal scroll. */
+.fb-add{
+  position:fixed;left:12px;bottom:12px;z-index:3;
+  padding:9px 14px;border:1px solid var(--border);border-radius:999px;
+  background:var(--surface);color:var(--text);font-size:14px;cursor:pointer;
+  box-shadow:0 2px 10px rgba(0,0,0,.10);max-width:calc(100% - 24px);
+}
+.fb-add[aria-pressed="true"]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+.fb-panel{
+  position:fixed;right:12px;bottom:12px;z-index:4;width:340px;max-width:calc(100% - 24px);
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.20);
+}
+.fb-panel[hidden]{display:none}
+.fb-title{font-size:14px;margin:0 0 8px;font-weight:600;color:var(--text)}
+.fb-quote{
+  margin:0 0 10px;padding:8px 10px;border-left:2px solid var(--border);
+  color:var(--muted);font-size:13px;max-height:5.4em;overflow:auto;overflow-wrap:anywhere;
+}
+.fb-panel label{display:block;font-size:12px;color:var(--muted);margin:0 0 8px}
+/* The class rule above outranks the UA's [hidden] rule, so say it explicitly —
+   the name row is hidden once a browser has answered it. */
+.fb-panel label[hidden]{display:none}
+.fb-panel input,.fb-panel textarea{
+  display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid var(--border);
+  border-radius:8px;background:var(--bg);color:var(--text);font:14px/1.5 inherit;
+}
+.fb-panel textarea{min-height:84px;resize:vertical}
+.fb-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+.fb-actions button{padding:8px 14px;border-radius:8px;font-size:14px;cursor:pointer}
+.fb-actions .primary{border:0;background:var(--accent);color:var(--bg);font-weight:600}
+.fb-actions .ghost{border:1px solid var(--border);background:var(--surface);color:var(--text)}
+.fb-status{margin:8px 0 0;font-size:13px;color:var(--muted);min-height:18px}
+.fb-done{
+  position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:5;
+  max-width:calc(100% - 24px);padding:10px 16px;border-radius:999px;
+  background:var(--accent);color:var(--bg);font-size:14px;box-shadow:0 4px 18px rgba(0,0,0,.20);
+}
+.fb-done[hidden]{display:none}
+/* Honeypot: off-screen for a person, filled in by a bot. Clipped rather than
+   pushed off to the side so it can never widen the page. */
+.fb-hp{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.fb-hp input{width:1px;height:1px;min-width:0;padding:0;margin:0;border:0}
+@media (max-width:600px){
+  .fb-panel{left:8px;right:8px;bottom:8px;width:auto;max-width:none}
+  .fb-add{left:8px;bottom:8px}
+}
+@media print{ .fb-add,.fb-panel,.fb-done{display:none} }
 `;
 
 // Height bridge + confirmed open. Deliberately narrow: the sandboxed surfaces
@@ -147,7 +199,172 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
     }
     if (d.type === 'open-link' && typeof d.url === 'string' && /^https?:/.test(d.url)) {
       window.open(d.url, '_blank', 'noopener,noreferrer');
+      return;
     }
+    // Feedback capture. The anchor arrives as DATA and is only ever read as
+    // data: nothing from a frame is inserted as markup anywhere below.
+    // A lazy frame can finish loading after point mode was armed; catch it up.
+    if (d.type === 'feedback-ready') {
+      if (armed && frame.contentWindow) {
+        frame.contentWindow.postMessage({ __sideshow: true, type: 'feedback-arm', mode: 'point' }, '*');
+      }
+      return;
+    }
+    if (d.type === 'feedback-select' && d.anchor) { openComposer(frame, d.anchor); return; }
+    if (d.type === 'feedback-point' && d.anchor) { armPoint(false); openComposer(frame, d.anchor); }
+  });
+
+  // --- feedback composer ------------------------------------------------
+  //
+  // The selection itself is captured inside the sandboxed frame (the trusted
+  // page cannot read across an opaque origin, and must not be able to). This
+  // half owns identity, the note, and the single submission. Submissions are
+  // private to the publication's owner: nothing here ever reads feedback back,
+  // so one reader can never see another's note.
+  var NAME_KEY = 'sideshow.feedback.name';
+  var EMAIL_KEY = 'sideshow.feedback.email';
+  var panel = document.getElementById('fb-panel');
+  var form = document.getElementById('fb-form');
+  var quoteEl = document.getElementById('fb-quote');
+  var nameRow = document.getElementById('fb-name-row');
+  var nameInput = document.getElementById('fb-name');
+  var emailInput = document.getElementById('fb-email');
+  var noteInput = document.getElementById('fb-note');
+  var honeypot = document.getElementById('fb-website');
+  var statusEl = document.getElementById('fb-status');
+  var doneEl = document.getElementById('fb-done');
+  var addBtn = document.getElementById('fb-add');
+  var pending = null;
+  var pendingFrame = null;
+  var armed = false;
+  var doneTimer = 0;
+
+  function remembered(key){
+    try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+  }
+  function remember(key, value){
+    try { localStorage.setItem(key, value); } catch (e) {}
+  }
+  function tellFrames(message){
+    for (var i = 0; i < frames.length; i++) {
+      var win = frames[i].contentWindow;
+      if (win) win.postMessage(message, '*');
+    }
+  }
+  function armPoint(next){
+    armed = next;
+    addBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+    addBtn.textContent = next ? 'Click a spot \u2014 or press Esc' : 'Add a note';
+    tellFrames({ __sideshow: true, type: 'feedback-arm', mode: next ? 'point' : 'none' });
+  }
+  function closeComposer(clearFrame){
+    panel.hidden = true;
+    if (clearFrame && pendingFrame && pendingFrame.contentWindow) {
+      pendingFrame.contentWindow.postMessage({ __sideshow: true, type: 'feedback-clear' }, '*');
+    }
+    pending = null;
+    pendingFrame = null;
+  }
+  function openComposer(frame, raw){
+    var anchor = {
+      itemIndex: Number(frame.getAttribute('data-item')),
+      surfaceIndex: Number(frame.getAttribute('data-si')),
+    };
+    var surfaceId = frame.getAttribute('data-sid');
+    if (surfaceId) anchor.surfaceId = surfaceId;
+    var label;
+    if (raw.kind === 'text') {
+      anchor.kind = 'text';
+      anchor.quote = String(raw.quote == null ? '' : raw.quote);
+      if (!anchor.quote.trim()) return;
+      // The frame drops start/end meta when its own quote check failed, so an
+      // unverifiable structural position is never stored.
+      if (raw.startMeta && raw.endMeta) {
+        anchor.startMeta = raw.startMeta;
+        anchor.endMeta = raw.endMeta;
+      }
+      if (typeof raw.prefix === 'string') anchor.prefix = raw.prefix;
+      if (typeof raw.suffix === 'string') anchor.suffix = raw.suffix;
+      label = '\u201c' + anchor.quote + '\u201d';
+    } else {
+      anchor.kind = 'point';
+      anchor.x = Number(raw.x);
+      anchor.y = Number(raw.y);
+      if (!isFinite(anchor.x) || !isFinite(anchor.y)) return;
+      label = 'A spot on \u201c' + (frame.getAttribute('title') || 'this') + '\u201d';
+    }
+    pending = anchor;
+    pendingFrame = frame;
+    // Everything a reader or an agent produced goes in as TEXT, never markup.
+    quoteEl.textContent = label;
+    statusEl.textContent = '';
+    noteInput.value = '';
+    var knownName = remembered(NAME_KEY);
+    nameInput.value = knownName;
+    emailInput.value = remembered(EMAIL_KEY);
+    // Asked once per browser, then never again.
+    nameRow.hidden = !!knownName;
+    nameInput.required = !knownName;
+    panel.hidden = false;
+    (knownName ? noteInput : nameInput).focus();
+  }
+  function showDone(){
+    doneEl.textContent = 'Thanks \u2014 your note went to the author.';
+    doneEl.hidden = false;
+    if (doneTimer) clearTimeout(doneTimer);
+    doneTimer = setTimeout(function(){ doneEl.hidden = true; }, 6000);
+  }
+
+  addBtn.addEventListener('click', function(){
+    if (!panel.hidden) closeComposer(true);
+    armPoint(!armed);
+  });
+  document.getElementById('fb-cancel').addEventListener('click', function(){ closeComposer(true); });
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Escape') return;
+    if (armed) armPoint(false);
+    if (!panel.hidden) closeComposer(true);
+  });
+
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    if (!pending) return;
+    var name = (nameInput.value || '').trim();
+    var note = (noteInput.value || '').trim();
+    if (!name) { statusEl.textContent = 'Please add your name.'; return; }
+    if (!note) { statusEl.textContent = 'Please write a note.'; return; }
+    statusEl.textContent = 'Sending\u2026';
+    fetch(${JSON.stringify(`${base}/api/v/${slug}/feedback`)}, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        snapshotId: ${JSON.stringify(snapshotId)},
+        anchor: pending,
+        note: note,
+        name: name,
+        email: (emailInput.value || '').trim(),
+        website: honeypot.value,
+      }),
+    }).then(function(res){
+      if (res.status === 201) {
+        remember(NAME_KEY, name);
+        remember(EMAIL_KEY, (emailInput.value || '').trim());
+        closeComposer(true);
+        showDone();
+        return;
+      }
+      if (res.status === 429) {
+        statusEl.textContent = 'That is a lot of notes at once \u2014 please try again in a few minutes.';
+        return;
+      }
+      if (res.status === 409) {
+        statusEl.textContent = 'This page was updated while you were writing. Reload it, then send your note again.';
+        return;
+      }
+      statusEl.textContent = 'That did not send. Please try again.';
+    }).catch(function(){
+      statusEl.textContent = 'That did not send \u2014 check your connection and try again.';
+    });
   });
   ${
     trackOpens
@@ -171,6 +388,27 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
   }
 })();
 `;
+
+// The composer. Static markup only — every value a reader or an agent produced
+// is written into it later with textContent / .value, never as HTML. There is
+// deliberately no thread, no reply and no list of other people's notes: a
+// submission is private to the publication's owner, and this page has no route
+// that could read one back.
+const COMPOSER_HTML =
+  `<button class="fb-add" id="fb-add" type="button" aria-pressed="false">Add a note</button>` +
+  `<div class="fb-panel" id="fb-panel" role="dialog" aria-label="Send a note" hidden>` +
+  `<form id="fb-form"><p class="fb-title">Send a note</p>` +
+  `<p class="fb-quote" id="fb-quote"></p>` +
+  `<label id="fb-name-row">Your name<input id="fb-name" name="name" maxlength="120" autocomplete="name"></label>` +
+  `<label>Email <span>(optional)</span><input id="fb-email" name="email" type="email" maxlength="120" autocomplete="email"></label>` +
+  `<label>Note<textarea id="fb-note" name="note" maxlength="4000" required></textarea></label>` +
+  `<label class="fb-hp" aria-hidden="true">Website<input id="fb-website" name="website" type="text" tabindex="-1" autocomplete="off"></label>` +
+  `<div class="fb-actions">` +
+  `<button class="ghost" id="fb-cancel" type="button">Cancel</button>` +
+  `<button class="primary" id="fb-send" type="submit">Send</button></div>` +
+  `<p class="fb-status" id="fb-status" role="status" aria-live="polite"></p>` +
+  `</form></div>` +
+  `<div class="fb-done" id="fb-done" role="status" aria-live="polite" hidden></div>`;
 
 function identityHeader(identity: IdentityHeader | null, base: string): string {
   if (!identity) return "";
@@ -217,10 +455,16 @@ export function renderPublicationPage(input: PublicationPageInput): string {
             )}</pre></div>`;
           }
           if (surface.kind === "trace") return "";
-          const src = `${base}/api/v/${encodeURIComponent(input.slug)}/s/${itemIndex}/${surfaceIndex}`;
+          // `fb=1` asks the surface document for feedback capture. Only this
+          // page ever sets it; a private workspace surface never carries it.
+          const src = `${base}/api/v/${encodeURIComponent(input.slug)}/s/${itemIndex}/${surfaceIndex}?fb=1`;
+          // The frame reports a selection or a click, but knows nothing about
+          // where it sits — the anchor's surface identity is read back off
+          // these attributes, in the trusted page.
+          const surfaceId = surface.id ? ` data-sid="${escapeHtml(surface.id)}"` : "";
           // No allow-same-origin: the frame runs at an opaque origin and cannot
           // touch this page, its cookies or the API.
-          return `<div class="surface"><iframe data-surface sandbox="allow-scripts allow-popups" loading="lazy" title="${escapeHtml(
+          return `<div class="surface"><iframe data-surface data-item="${itemIndex}" data-si="${surfaceIndex}"${surfaceId} sandbox="allow-scripts allow-popups" loading="lazy" title="${escapeHtml(
             item.title,
           )}" src="${escapeHtml(src)}"></iframe></div>`;
         })
@@ -247,7 +491,8 @@ export function renderPublicationPage(input: PublicationPageInput): string {
     `<div class="scheme"><button id="scheme-toggle" type="button" aria-label="Switch between light and dark">\u25d1</button></div>` +
       `<div class="wrap">${identityHeader(input.identity, base)}<h1>${escapeHtml(
         input.title,
-      )}</h1>${contents}${items}</div>`,
+      )}</h1>${contents}${items}</div>` +
+      COMPOSER_HTML,
     PAGE_JS(input.slug, input.snapshot.id, input.trackOpens, base),
   );
 }

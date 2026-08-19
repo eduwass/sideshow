@@ -45,6 +45,8 @@ import { computeVisitorHash, deviceClass } from "./visitorHash.ts";
 //   GET  /a/:id                          an asset a published snapshot pins
 //   GET  /robots.txt
 //
+// Owner reads of external feedback live under /api/owner/publications/:id/feedback.
+//
 // Owner writes live under /api/owner/* behind a bearer token the private
 // control plane holds server-side. That token is never sent to a browser.
 
@@ -352,11 +354,19 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
       // stored here that could not have been published there.
       const validated = await validateSurfaces(item.surfaces);
       if (!validated.ok) return c.json({ error: validated.error }, 400);
+      // The validator strips `id` (the zod schemas do not declare it), and
+      // strict mode never drops a surface — so re-apply each incoming id by
+      // position. External feedback anchors record it, and it is what lets an
+      // anchor survive a surface being reordered in a later revision.
+      const raws = (item.surfaces as { id?: unknown }[] | undefined) ?? [];
       items.push({
         postId: typeof item.postId === "string" ? item.postId : "",
         title: typeof item.title === "string" ? item.title : "Untitled",
         version: Number.isInteger(item.version) ? (item.version as number) : 1,
-        surfaces: validated.surfaces,
+        surfaces: validated.surfaces.map((surface, index) => {
+          const id = raws[index]?.id;
+          return typeof id === "string" && id ? { ...surface, id } : surface;
+        }),
       });
     }
     const assetIds = Array.isArray(body.assetIds)
@@ -573,6 +583,31 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     return c.body(null, 204);
   });
 
+  // The owner's read of what clients sent. Feedback lives only here, so this is
+  // how the private control plane surfaces it — there is deliberately no public
+  // route that can read a submission back: one client must never see another's
+  // note (docs/adr/0003).
+  app.get("/api/owner/publications/:id/feedback", async (c) => {
+    const publicationId = c.req.param("id");
+    if (!(await publications.getPublication(publicationId))) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const status = c.req.query("status");
+    return c.json(
+      await publications.listFeedback({
+        publicationId,
+        ...(c.req.query("shareLinkId") && { shareLinkId: c.req.query("shareLinkId")! }),
+        ...(c.req.query("snapshotId") && { snapshotId: c.req.query("snapshotId")! }),
+        ...(status === "unread" ||
+        status === "read" ||
+        status === "resolved" ||
+        status === "rejected"
+          ? { status }
+          : {}),
+      }),
+    );
+  });
+
   // Asset bytes for a publication. Exempt from the small public body cap above
   // and bounded by the asset cap instead.
   app.post(
@@ -682,7 +717,15 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
   // route and the owner's historical-snapshot route so both are served under
   // exactly the same headers — there is one place where the sandbox CSP is set,
   // not two that can drift.
-  const renderSurfaceDocument = async (c: Context, title: string, surface: Surface) => {
+  const renderSurfaceDocument = async (
+    c: Context,
+    title: string,
+    surface: Surface,
+    // Feedback capture is opt-in per request and only the publication page asks
+    // for it, so a surface document without the flag is byte-identical to what
+    // the private workspace serves.
+    feedback = false,
+  ) => {
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Content-Security-Policy", "sandbox allow-scripts");
     // A snapshot is immutable, so its rendered surfaces are too. `private`
@@ -697,11 +740,19 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
 
     if (surface.kind === "html") {
       return c.html(
-        renderHtmlPage({ title, html: surface.html, origin, theme, mode, kits: surface.kits }),
+        renderHtmlPage({
+          title,
+          html: surface.html,
+          origin,
+          theme,
+          mode,
+          feedback,
+          kits: surface.kits,
+        }),
       );
     }
     if (surface.kind === "mermaid") {
-      return c.html(renderMermaidPage({ mermaid: surface.mermaid, origin, theme, mode }));
+      return c.html(renderMermaidPage({ mermaid: surface.mermaid, origin, theme, mode, feedback }));
     }
     const { renderCode, renderDiff, renderMarkdown, renderTerminal } =
       await import("./richRender.ts");
@@ -720,7 +771,14 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
               : null;
     if (!rendered) return c.text("No renderable surface there", 404);
     return c.html(
-      renderSandboxedPart({ body: rendered.body, css: rendered.css, origin, theme, mode }),
+      renderSandboxedPart({
+        body: rendered.body,
+        css: rendered.css,
+        origin,
+        theme,
+        mode,
+        feedback,
+      }),
     );
   };
 
@@ -796,7 +854,7 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     if (!surface || !isSandboxedSurfaceKind(surface.kind)) {
       return c.text("No renderable surface there", 404);
     }
-    return renderSurfaceDocument(c, item.title, surface);
+    return renderSurfaceDocument(c, item.title, surface, c.req.query("fb") === "1");
   });
 
   // Assets a published snapshot pins. Publication-scoped by construction: an
