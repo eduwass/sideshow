@@ -144,15 +144,15 @@ async function restoreInFrame(page: Page, anchors: unknown[]) {
     return await new Promise<{ status: string; found: string | null }[]>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("no reply from the frame")), 10_000);
       function onMessage(event: MessageEvent) {
-        const data = event.data as { __sideshow?: unknown; type?: unknown; results?: unknown };
-        if (!data || data.__sideshow !== true || data.type !== "feedback-restored") return;
+        const data = event.data as { __pub?: unknown; type?: unknown; results?: unknown };
+        if (!data || data.__pub !== true || data.type !== "feedback-restored") return;
         clearTimeout(timer);
         window.removeEventListener("message", onMessage);
         resolve(data.results as { status: string; found: string | null }[]);
       }
       window.addEventListener("message", onMessage);
       frame.contentWindow!.postMessage(
-        { __sideshow: true, type: "feedback-restore", anchors: list },
+        { __pub: true, type: "feedback-restore", anchors: list },
         "*",
       );
     });
@@ -203,11 +203,11 @@ test("the page ignores capture messages that did not come from one of its frames
   // Same shape, wrong sender: the page matches e.source against its own frames.
   await page.evaluate(() => {
     window.postMessage(
-      { __sideshow: true, type: "feedback-select", anchor: { kind: "text", quote: "spoofed" } },
+      { __pub: true, type: "feedback-select", anchor: { kind: "text", quote: "spoofed" } },
       "*",
     );
     window.postMessage(
-      { __sideshow: true, type: "feedback-point", anchor: { kind: "point", x: 0.5, y: 0.5 } },
+      { __pub: true, type: "feedback-point", anchor: { kind: "point", x: 0.5, y: 0.5 } },
       "*",
     );
   });

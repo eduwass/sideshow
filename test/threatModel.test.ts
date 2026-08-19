@@ -331,6 +331,7 @@ test("the public runtime mounts exactly the surface it documents, and nothing el
       "GET /api/owner/links/:id/analytics",
       "GET /api/owner/publications",
       "GET /api/owner/publications/:id",
+      "GET /api/owner/publications/:id/feedback",
       "GET /api/owner/publications/:id/links",
       "GET /api/owner/publications/:id/snapshots",
       "GET /api/owner/snapshots/:id",
@@ -1283,7 +1284,9 @@ test("the trusted pages never contain an html surface's markup", async () => {
       false,
       "an iframe was given the page's own origin",
     );
-    assert.match(iframe, new RegExp(`src="[^"]*/api/v/${w.linkA.slug}/s/\\d+/\\d+"`));
+    // The query carries the feedback-capture opt-in, so match the path and
+    // allow a query rather than pinning the exact string.
+    assert.match(iframe, new RegExp(`src="[^"]*/api/v/${w.linkA.slug}/s/\\d+/\\d+(\\?[^"]*)?"`));
   }
 });
 
