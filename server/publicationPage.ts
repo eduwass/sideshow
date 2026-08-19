@@ -41,6 +41,12 @@ body{
   -webkit-text-size-adjust:100%;
 }
 .wrap{max-width:900px;margin:0 auto;padding:32px 20px 96px}
+nav.contents{margin:0 0 32px;padding:14px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+nav.contents p{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+nav.contents ol{margin:0;padding:0 0 0 20px;display:grid;gap:4px}
+nav.contents a{color:var(--text);text-decoration:none}
+nav.contents a:hover{text-decoration:underline}
+section.item{scroll-margin-top:16px}
 header.identity{display:flex;align-items:center;gap:12px;margin-bottom:28px}
 header.identity img{width:36px;height:36px;border-radius:50%;object-fit:cover;background:var(--border)}
 header.identity .who{font-weight:600}
@@ -166,16 +172,28 @@ export function renderPublicationPage(input: PublicationPageInput): string {
           )}" src="${escapeHtml(src)}"></iframe></div>`;
         })
         .join("");
-      const heading = input.snapshot.items.length > 1 ? `<h2>${escapeHtml(item.title)}</h2>` : "";
+      // The id the contents nav links to — so a heading exists for every anchor.
+      const heading =
+        input.snapshot.items.length > 1
+          ? `<h2 id="item-${itemIndex}">${escapeHtml(item.title)}</h2>`
+          : "";
       return `<section class="item">${heading}${surfaces}</section>`;
     })
     .join("");
+  // Navigation for a collection. A plain anchor list: it needs no script, works
+  // at any width, and reflows to a single column on a phone.
+  const contents =
+    input.snapshot.items.length > 1
+      ? `<nav class="contents"><p>Contents</p><ol>${input.snapshot.items
+          .map((item, index) => `<li><a href="#item-${index}">${escapeHtml(item.title)}</a></li>`)
+          .join("")}</ol></nav>`
+      : "";
   return shell(
     input.title,
     input.nonce,
     `<div class="wrap">${identityHeader(input.identity, base)}<h1>${escapeHtml(
       input.title,
-    )}</h1>${items}</div>`,
+    )}</h1>${contents}${items}</div>`,
     PAGE_JS(input.slug, input.snapshot.id, input.trackOpens, base),
   );
 }

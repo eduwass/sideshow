@@ -2,6 +2,7 @@ import { createEffect, createSignal, Index, type JSX, on, onCleanup, Show } from
 import {
   apiText,
   canScreenshot,
+  NO_DESTINATION,
   type PublicationStatus,
   publicationStatus,
   postImageLink,
@@ -37,8 +38,6 @@ const VIEWPORT_PAD = 8;
 // separator block, 4px of panel padding either side) — the menu is measured
 // before it can be measured, so the flip decision uses this estimate.
 const MENU_HEIGHT = (rows: number) => rows * 32 + 9 + 8;
-
-const NO_DESTINATION = "This workspace has no publication destination configured. See the README.";
 
 type MenuAction = {
   key: string;
