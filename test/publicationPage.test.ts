@@ -92,7 +92,7 @@ for (const [kind, surface] of SANDBOXED) {
     const html = render({ items: [item({ surfaces: [surface] })] });
     assert.match(
       html,
-      /<iframe data-surface sandbox="allow-scripts allow-popups" loading="lazy" title="Frozen post" src="\/api\/v\/demo-slug\/s\/0\/0">/,
+      /<iframe data-surface data-item="0" data-si="0" sandbox="allow-scripts allow-popups" loading="lazy" title="Frozen post" src="\/api\/v\/demo-slug\/s\/0\/0\?fb=1">/,
     );
     assert.equal(html.includes("allow-same-origin"), false, "never same-origin");
     // None of the surface's own content reached the trusted document.
@@ -114,8 +114,8 @@ test("surface iframe srcs are indexed by item and surface position", () => {
       }),
     ],
   });
-  assert.match(html, /src="\/api\/v\/demo-slug\/s\/0\/0"/);
-  assert.match(html, /src="\/api\/v\/demo-slug\/s\/1\/1"/);
+  assert.match(html, /src="\/api\/v\/demo-slug\/s\/0\/0\?fb=1"/);
+  assert.match(html, /src="\/api\/v\/demo-slug\/s\/1\/1\?fb=1"/);
 });
 
 test("an image surface renders an escaped img, with the figcaption only when captioned", () => {
@@ -175,10 +175,11 @@ test("basePath prefixes every URL the page builds", () => {
       }),
     ],
   });
-  assert.match(html, /src="\/show\/api\/v\/demo-slug\/s\/0\/0"/);
+  assert.match(html, /src="\/show\/api\/v\/demo-slug\/s\/0\/0\?fb=1"/);
   assert.match(html, /<img src="\/show\/a\/asset-1"/);
   assert.match(html, /src="\/show\/a\/av-1" alt=""/);
   assert.match(html, /"\/show\/api\/v\/demo-slug\/open"/);
+  assert.match(html, /"\/show\/api\/v\/demo-slug\/feedback"/);
 });
 
 // --- item headings ------------------------------------------------------
@@ -270,7 +271,9 @@ test("trackOpens:false omits the confirmed-open fetch entirely", () => {
   const html = render({ trackOpens: false, snapshotId: "snap-xyz" });
   assert.equal(html.includes("confirmOpen"), false);
   assert.equal(html.includes("/open"), false);
-  assert.equal(html.includes("snap-xyz"), false);
+  // The snapshot id is still in the page: the feedback composer submits against
+  // the exact revision the reader is looking at. Tracking is what is off.
+  assert.match(html, /"\/api\/v\/demo-slug\/feedback"/);
   // The message bridge is still there — resize is not tracking.
   assert.match(html, /d\.type === 'resize'/);
 });
@@ -329,7 +332,9 @@ function assertNoBranding(html: string, label: string) {
   const tokens = [...script.matchAll(/[\w$]*sideshow[\w$.]*/gi)].map((m) => m[0]);
   assert.deepEqual(
     [...new Set(tokens)],
-    tokens.length ? ["sideshow.scheme", "__sideshow"] : [],
+    tokens.length
+      ? ["sideshow.scheme", "__sideshow", "sideshow.feedback.name", "sideshow.feedback.email"]
+      : [],
     `${label}: unexpected product name in the inline script`,
   );
   // Nor any of the usual ways a product signs its own pages.
@@ -481,7 +486,10 @@ test("an html surface's script never reaches the trusted page, only its iframe r
   assert.equal(html.includes("<script>window"), false);
   // Exactly one script in the document: the page's own nonced bridge.
   assert.equal(html.split("<script").length - 1, 1);
-  assert.match(html, /<iframe data-surface sandbox="allow-scripts allow-popups"/);
+  assert.match(
+    html,
+    /<iframe data-surface data-item="0" data-si="0" sandbox="allow-scripts allow-popups"/,
+  );
   assert.equal(html.includes("allow-same-origin"), false);
   assert.equal(html.includes("allow-forms"), false);
   assert.equal(html.includes("allow-top-navigation"), false);

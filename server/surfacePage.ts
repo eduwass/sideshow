@@ -1,3 +1,4 @@
+import { FEEDBACK_CAPTURE_JS } from "./feedbackCaptureBundle.ts";
 import { kitAssets } from "./kits.ts";
 import {
   type Mode,
@@ -279,6 +280,17 @@ if (window.ResizeObserver) {
 }
 `;
 
+// Feedback capture (issue #9). The text a publication reader wants to quote
+// lives inside this opaque-origin document, and the trusted page cannot read a
+// selection across that boundary — so the capture runs HERE and reports through
+// the same postMessage bridge. It is strictly opt-in: only the public runtime
+// asks for it (`?fb=1` on the surface URL), so a private workspace surface
+// document is byte-identical to what it was before this existed. The bundle is
+// inline script, already covered by both CSPs' `script-src 'unsafe-inline'`,
+// and posts only to the parent — no `connect-src` is needed or added.
+const captureScript = (feedback?: boolean): string =>
+  feedback ? `\n<script>${FEEDBACK_CAPTURE_JS}</script>` : "";
+
 export const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -325,6 +337,8 @@ export function renderSandboxedPart(doc: {
   origin: string;
   theme?: Theme | string;
   mode?: Mode;
+  // Opt-in feedback capture; see captureScript.
+  feedback?: boolean;
 }): string {
   const theme =
     typeof doc.theme === "string" || doc.theme == null ? themeById(doc.theme) : doc.theme;
@@ -343,7 +357,7 @@ export function renderSandboxedPart(doc: {
 </head>
 <body>
 ${doc.body}
-<script>${BRIDGE_JS}</script>
+<script>${BRIDGE_JS}</script>${captureScript(doc.feedback)}
 </body>
 </html>`;
 }
@@ -472,6 +486,8 @@ export function renderMermaidPage(doc: {
   origin: string;
   theme?: Theme | string;
   mode?: Mode;
+  // Opt-in feedback capture; see captureScript.
+  feedback?: boolean;
 }): string {
   const theme =
     typeof doc.theme === "string" || doc.theme == null ? themeById(doc.theme) : doc.theme;
@@ -528,7 +544,7 @@ try {
 <body>
 <div id="m"></div>
 <script type="module">${loader}</script>
-<script>${BRIDGE_JS}</script>
+<script>${BRIDGE_JS}</script>${captureScript(doc.feedback)}
 </body>
 </html>`;
 }
@@ -545,6 +561,8 @@ export function renderHtmlPage(doc: {
   // is plain inline script — same trust level as the bridge, already covered by
   // the html-surface CSP's `script-src 'unsafe-inline'`. Unknown ids are ignored.
   kits?: string[];
+  // Opt-in feedback capture; see captureScript.
+  feedback?: boolean;
 }): string {
   const theme =
     typeof doc.theme === "string" || doc.theme == null ? themeById(doc.theme) : doc.theme;
@@ -561,7 +579,7 @@ export function renderHtmlPage(doc: {
 <body>
 ${SVG_DEFS}
 ${doc.html}
-<script>${BRIDGE_JS}</script>
+<script>${BRIDGE_JS}</script>${captureScript(doc.feedback)}
 ${kit.js ? `<script>${kit.js}</script>` : ""}
 </body>
 </html>`;
