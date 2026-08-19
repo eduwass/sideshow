@@ -100,10 +100,22 @@ jobs:
           sudo systemctl kill --kill-who=all apt-daily.service || true
           sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer || true
       - name: Install browser system dependencies
-        timeout-minutes: 8
-        run: npx playwright install-deps chromium webkit
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3; do
+            npx playwright install-deps chromium webkit && exit 0
+            echo "apt failed (attempt ${attempt}); retrying"
+            sleep 20
+          done
+          exit 1
+      # The browser binaries are large and version-pinned by the lockfile, so
+      # cache them; the apt step above is the part that cannot be cached.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install browsers
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: npx playwright install chromium webkit
       - run: npm run test:e2e
 
