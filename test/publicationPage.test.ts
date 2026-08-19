@@ -311,32 +311,16 @@ test("the password gate escapes the slug into its action and honours basePath", 
 
 // --- neutrality: no product branding, no private chrome ------------------
 
-// The one thing a client page must never do is look like a Sideshow page. The
-// two identifiers below are protocol, not branding: `sideshow.scheme` is the
-// localStorage key the reader's own scheme override lives under, and
-// `__sideshow` is the postMessage marker the sandboxed surface bridge stamps
-// its messages with (server/surfacePage.ts) — the page has to recognise it to
-// size a frame. Both live inside the inline script and are invisible to a
-// reader. Anything else bearing the product name is a leak, so the assertion
-// below is an exact allowlist rather than a substring search.
-const SCRIPT_BLOCK = /<script[^>]*>([\s\S]*?)<\/script>/;
-
+// The one thing a client page must never do is look like a Sideshow page. This
+// used to allow two protocol identifiers through — the localStorage key for the
+// reader's scheme override, and the postMessage marker the surface bridge
+// stamps its messages with. A production smoke test flagged both: a reader who
+// opens devtools should find nothing naming the tool this was published from.
+// The key is now neutral, and the message handler trusts frame IDENTITY rather
+// than a magic word (which was always the real control), so the assertion can
+// be what it should have been: the product name appears nowhere at all.
 function assertNoBranding(html: string, label: string) {
-  const markup = html.replace(SCRIPT_BLOCK, "<script></script>");
-  assert.equal(
-    /sideshow/i.test(markup),
-    false,
-    `${label}: the product name reached the rendered markup`,
-  );
-  const script = SCRIPT_BLOCK.exec(html)?.[1] ?? "";
-  const tokens = [...script.matchAll(/[\w$]*sideshow[\w$.]*/gi)].map((m) => m[0]);
-  assert.deepEqual(
-    [...new Set(tokens)],
-    tokens.length
-      ? ["sideshow.scheme", "__sideshow", "sideshow.feedback.name", "sideshow.feedback.email"]
-      : [],
-    `${label}: unexpected product name in the inline script`,
-  );
+  assert.equal(/sideshow/i.test(html), false, `${label}: the product name reached the page`);
   // Nor any of the usual ways a product signs its own pages.
   for (const marketing of [/powered by/i, /made with/i, /built with/i, /\bbrand\b/i]) {
     assert.equal(marketing.test(html), false, `${label}: ${marketing}`);
@@ -463,7 +447,7 @@ test("the scheme toggle is a labelled control that persists the reader's choice 
   );
   // The choice is stored on the reader's device and never posted anywhere.
   assert.match(html, /localStorage\.setItem\(KEY, next\)/);
-  assert.match(html, /var KEY = 'sideshow\.scheme'/);
+  assert.match(html, /var KEY = 'pub\.scheme'/);
   // Switching re-requests each surface with an explicit mode: a sandboxed
   // surface bakes its colours in, so it must re-render rather than restyle.
   assert.match(html, /'mode=' \+ mode/);

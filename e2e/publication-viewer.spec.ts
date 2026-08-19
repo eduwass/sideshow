@@ -161,7 +161,7 @@ test("the scheme toggle flips the page, re-renders each surface and survives a r
   for (let i = 0; i < (await frames.count()); i++) {
     await expect(frames.nth(i)).toHaveAttribute("src", /[?&]mode=dark/);
   }
-  expect(await page.evaluate(() => localStorage.getItem("sideshow.scheme"))).toBe("dark");
+  expect(await page.evaluate(() => localStorage.getItem("pub.scheme"))).toBe("dark");
 
   // The choice is the reader's, and it is theirs on the next visit too.
   await page.reload();

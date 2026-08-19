@@ -149,7 +149,9 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
   // stored on their device only and never reaches the server. A sandboxed
   // surface bakes its colours into the document it was served as, so switching
   // has to RELOAD each frame with an explicit mode rather than restyle it.
-  var KEY = 'sideshow.scheme';
+  // Neutral key: a reader who opens devtools should find nothing that names the
+  // tool this was published from.
+  var KEY = 'pub.scheme';
   var root = document.documentElement;
   function stored(){
     try { return localStorage.getItem(KEY); } catch (e) { return null; }
@@ -186,7 +188,11 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
 
   window.addEventListener('message', function(e){
     var d = e.data;
-    if (!d || d.__sideshow !== true) return;
+    if (!d || typeof d !== 'object') return;
+    // Identity, not a magic word, is what makes a message trustworthy here: it
+    // has to come from one of THIS page's own surface frames. The bridge's own
+    // discriminator is deliberately not checked, so the product name never
+    // appears in a client-facing document.
     var frame = null;
     for (var i = 0; i < frames.length; i++) {
       if (frames[i].contentWindow === e.source) { frame = frames[i]; break; }
@@ -206,7 +212,7 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
     // A lazy frame can finish loading after point mode was armed; catch it up.
     if (d.type === 'feedback-ready') {
       if (armed && frame.contentWindow) {
-        frame.contentWindow.postMessage({ __sideshow: true, type: 'feedback-arm', mode: 'point' }, '*');
+        frame.contentWindow.postMessage({ __pub: true, type: 'feedback-arm', mode: 'point' }, '*');
       }
       return;
     }
@@ -221,8 +227,8 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
   // half owns identity, the note, and the single submission. Submissions are
   // private to the publication's owner: nothing here ever reads feedback back,
   // so one reader can never see another's note.
-  var NAME_KEY = 'sideshow.feedback.name';
-  var EMAIL_KEY = 'sideshow.feedback.email';
+  var NAME_KEY = 'pub.feedback.name';
+  var EMAIL_KEY = 'pub.feedback.email';
   var panel = document.getElementById('fb-panel');
   var form = document.getElementById('fb-form');
   var quoteEl = document.getElementById('fb-quote');
@@ -255,12 +261,12 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
     armed = next;
     addBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
     addBtn.textContent = next ? 'Click a spot \u2014 or press Esc' : 'Add a note';
-    tellFrames({ __sideshow: true, type: 'feedback-arm', mode: next ? 'point' : 'none' });
+    tellFrames({ __pub: true, type: 'feedback-arm', mode: next ? 'point' : 'none' });
   }
   function closeComposer(clearFrame){
     panel.hidden = true;
     if (clearFrame && pendingFrame && pendingFrame.contentWindow) {
-      pendingFrame.contentWindow.postMessage({ __sideshow: true, type: 'feedback-clear' }, '*');
+      pendingFrame.contentWindow.postMessage({ __pub: true, type: 'feedback-clear' }, '*');
     }
     pending = null;
     pendingFrame = null;

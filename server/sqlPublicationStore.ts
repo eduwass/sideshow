@@ -579,6 +579,20 @@ export class SqlPublicationStore implements PublicationStore {
 
   // --- assets ---
 
+  // Indexed on snapshot_assets(assetId), so this is a lookup rather than a scan
+  // even though it runs on the asset route.
+  async snapshotAssetPublications(assetId: string): Promise<string[]> {
+    return this.sql
+      .exec(
+        `SELECT DISTINCT s.publicationId AS publicationId FROM snapshot_assets a
+           JOIN snapshots s ON s.id = a.snapshotId
+          WHERE a.assetId = ?`,
+        assetId,
+      )
+      .toArray()
+      .map((row) => row.publicationId as string);
+  }
+
   async isSnapshotAsset(assetId: string): Promise<boolean> {
     return (
       this.sql

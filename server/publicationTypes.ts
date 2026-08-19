@@ -248,6 +248,14 @@ export interface PublicationStore {
 
   /** Whether any snapshot pins this asset id (keeps it out of eviction). */
   isSnapshotAsset(assetId: string): Promise<boolean>;
+
+  /**
+   * Ids of the publications whose snapshots pin this asset. The public asset
+   * route needs to know WHOSE an asset is, so it can apply the same revocation
+   * and expiry gate every other public route applies; `isSnapshotAsset` alone
+   * only says the bytes are pinned by someone.
+   */
+  snapshotAssetPublications(assetId: string): Promise<string[]>;
 }
 
 // Detailed open events are pruned at 90 days; aggregates persist.

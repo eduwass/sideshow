@@ -1,0 +1,5 @@
+---
+"sideshow": patch
+---
+
+Add the public-sharing deployment runbook (`docs/public-sharing.md`) covering both runtimes' environment variables and route inventory, the deployed public Worker at `show.eduwass.com` and what its 503 "not configured" response means (a secret upload alone does not lift it — a redeploy is required), upstream sync for a fork, rollback (a Durable Object's SQLite is forward-only, so rollback is redeploying a previous Worker version), secret rotation and its blast radius, and data retention. Add `scripts/backup-sideshow.sh`, which backs up and restores a private SQLite workspace with SQLite's own `VACUUM INTO` — safe against a live WAL, checksummed, and verified with an integrity check plus per-table row counts. `npm run test:worker` now also runs the public publication Worker on real workerd: 503 without its secrets, `SqlPublicationStore`'s schema on a real Durable Object, owner-route authorization, and a seeded publication readable through its share link with the `sandbox` CSP header on surface documents.

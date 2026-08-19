@@ -864,12 +864,39 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
   // snapshot's surfaces, so it needs its own reachability check. There are only
   // ever a handful of publications in a workspace, so a scan is cheaper than
   // another index to keep in step.
-  const isIdentityAvatar = async (id: string): Promise<boolean> =>
-    (await publications.listPublications()).some((p) => p.identity?.avatarAssetId === id);
+  const identityAvatarPublications = async (id: string): Promise<string[]> =>
+    (await publications.listPublications())
+      .filter((p) => p.identity?.avatarAssetId === id)
+      .map((p) => p.id);
+
+  // Revocation and expiry have to reach the bytes too, not just the pages that
+  // frame them: an asset URL is a capability a recipient keeps after their link
+  // dies, and asset ids are stable content hashes, so "still pinned by some
+  // snapshot" is not on its own a reason to keep serving them. An asset stays
+  // reachable exactly as long as SOME live share link still leads to a
+  // publication that pins it — revoke or expire every link and the bytes go with
+  // them, matching every other public route.
+  //
+  // ponytail: the grain is per-publication, not per-link. While one link is
+  // still live, a holder of a revoked sibling link who kept an asset URL can
+  // still fetch those bytes. Closing that needs the asset URL to carry the slug
+  // it was reached through (`/v/:slug/a/:id`), which changes the published URL
+  // shape — a deliberate change, not a side effect of this gate.
+  const assetIsLive = async (id: string): Promise<boolean> => {
+    const owners = new Set([
+      ...(await publications.snapshotAssetPublications(id)),
+      ...(await identityAvatarPublications(id)),
+    ]);
+    for (const publicationId of owners) {
+      const links = await publications.listShareLinks(publicationId);
+      if (links.some((link) => shareLinkState(link, clock()) === "active")) return true;
+    }
+    return false;
+  };
 
   app.get("/a/:id", async (c) => {
     const id = c.req.param("id");
-    if (!(await publications.isSnapshotAsset(id)) && !(await isIdentityAvatar(id))) {
+    if (!(await assetIsLive(id))) {
       return c.text("Asset not found", 404);
     }
     const asset = await store.getAsset(id);

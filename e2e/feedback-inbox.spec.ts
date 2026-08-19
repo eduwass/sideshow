@@ -224,14 +224,24 @@ test("a point anchor puts a marker at the recorded coordinates", async ({ page, 
   await expect(marker).toHaveAttribute("data-x", "25");
   await expect(marker).toHaveAttribute("data-y", "75");
 
+  // How far the marker's centre sits from a quarter across and three quarters
+  // down the frame it is drawn over. Measured through expect.poll rather than
+  // once: WebKit can report a not-yet-laid-out box for a sandboxed iframe at
+  // the moment it appears (see the WebKit-quirk note in AGENTS.md), so this
+  // waits for a real box instead of trusting the first reading.
   const wrap = page.locator('[data-feedback="fb-2"] .fb-frame-wrap');
-  const box = await wrap.boundingBox();
-  const spot = await marker.boundingBox();
-  expect(box).not.toBeNull();
-  expect(spot).not.toBeNull();
-  // A quarter across, three quarters down the frame it is drawn over.
-  expect(Math.abs(spot!.x + spot!.width / 2 - (box!.x + box!.width * 0.25))).toBeLessThan(2);
-  expect(Math.abs(spot!.y + spot!.height / 2 - (box!.y + box!.height * 0.75))).toBeLessThan(2);
+  const drift = async () => {
+    const box = await wrap.boundingBox();
+    const spot = await marker.boundingBox();
+    // Not laid out yet: returning null (rather than a number) keeps the poll
+    // waiting instead of comparing a box that does not exist.
+    if (!box || !spot || box.width === 0 || box.height === 0) return null;
+    return Math.max(
+      Math.abs(spot.x + spot.width / 2 - (box.x + box.width * 0.25)),
+      Math.abs(spot.y + spot.height / 2 - (box.y + box.height * 0.75)),
+    );
+  };
+  await expect.poll(drift).toBeLessThan(2);
 });
 
 test("selected submissions are copied as a prompt, and only to the clipboard", async ({

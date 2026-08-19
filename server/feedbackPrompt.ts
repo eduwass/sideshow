@@ -35,6 +35,15 @@ const quoteBlock = (text: string): string => {
   return `${bar}\n${text}\n${bar}`;
 };
 
+// Untrusted single-line fields (a client's self-declared name and email) are
+// interpolated into the prompt's bullet list rather than fenced, so a newline in
+// one would let a submitter close the list and write their own headings — a note
+// they control, rendered as if it were the prompt's own framing. Collapse every
+// line break and control character into a space so a single-line field can only
+// ever be one line. The note and the anchor quote need no such treatment: they
+// are fenced above.
+const oneLine = (text: string): string => text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
+
 function anchorLine(entry: FeedbackPromptEntry): string {
   const anchor = entry.feedback.anchor;
   if (anchor.kind === "text") {
@@ -61,13 +70,17 @@ export function buildFeedbackPrompt(entries: FeedbackPromptEntry[]): string {
   ];
   entries.forEach((entry, index) => {
     const { feedback } = entry;
-    parts.push(`## ${index + 1}. ${entry.publicationTitle} — ${entry.itemTitle}`);
+    parts.push(`## ${index + 1}. ${oneLine(entry.publicationTitle)} — ${oneLine(entry.itemTitle)}`);
     parts.push("");
-    parts.push(`- Surface: ${entry.surfaceKind}`);
+    parts.push(`- Surface: ${oneLine(entry.surfaceKind)}`);
     parts.push(`- Revision: ${entry.snapshotRevision}`);
-    parts.push(`- Exact surface: ${entry.surfaceUrl}`);
-    parts.push(`- From: ${feedback.name}${feedback.email ? ` <${feedback.email}>` : ""}`);
-    if (entry.recipientLabel) parts.push(`- Link was labelled for: ${entry.recipientLabel}`);
+    parts.push(`- Exact surface: ${oneLine(entry.surfaceUrl)}`);
+    parts.push(
+      `- From: ${oneLine(feedback.name)}${feedback.email ? ` <${oneLine(feedback.email)}>` : ""}`,
+    );
+    if (entry.recipientLabel) {
+      parts.push(`- Link was labelled for: ${oneLine(entry.recipientLabel)}`);
+    }
     parts.push(`- Received: ${feedback.createdAt}`);
     parts.push("");
     parts.push(anchorLine(entry));
