@@ -3,7 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import { resolvePostProvenance } from "./agentsView.ts";
-import { decodeBase64 } from "./base64.ts";
+import { decodeBase64, encodeBase64 } from "./base64.ts";
 import {
   feedbackView,
   postDetailView,
@@ -2068,6 +2068,23 @@ export function createApp({
 
   // --- rendering ---
 
+  const inlineLocalAssets = async (html: string): Promise<string> => {
+    const ids = [...html.matchAll(/(["'])\/a\/([a-f0-9]{64})\1/g)].map((match) => match[2]!);
+    const dataUrls = new Map<string, string>();
+    await Promise.all(
+      [...new Set(ids)].map(async (id) => {
+        const asset = await store.getAsset(id);
+        if (asset) {
+          dataUrls.set(id, `data:${asset.contentType};base64,${encodeBase64(asset.data)}`);
+        }
+      }),
+    );
+    return html.replace(/(["'])\/a\/([a-f0-9]{64})\1/g, (source, quote, id) => {
+      const dataUrl = dataUrls.get(id);
+      return dataUrl ? `${quote}${dataUrl}${quote}` : source;
+    });
+  };
+
   // Serves one surface of a post as a themed, sandboxed document. The viewer
   // points an iframe here for every surface kind that becomes HTML — html surfaces
   // (author markup) and the rich kinds (markdown/code/diff/terminal rendered
@@ -2130,7 +2147,7 @@ export function createApp({
     // on; the resolved `version` makes it immutable, so a hit is always correct.
     // Versioned + themed requests (what the viewer always sends) are immutable,
     // so allow long-lived shared caching; an unpinned direct load is not.
-    const cacheKey = `${post.id}:${idx}:${version}:${themeId}:${themeRevision}:${mode ?? "os"}`;
+    const cacheKey = `${post.id}:${idx}:${version}:${themeId}:${themeRevision}:${mode ?? "os"}:assets-v2`;
     // `immutable` promises a browser it may keep this document for a year. A
     // custom theme only earns that promise when the caller pinned the revision
     // it is asking for (`trev`), because the id alone no longer identifies the
@@ -2146,7 +2163,7 @@ export function createApp({
       if (surface.kind === "html") {
         return renderHtmlPage({
           title,
-          html: surface.html,
+          html: await inlineLocalAssets(surface.html),
           origin,
           theme,
           mode,

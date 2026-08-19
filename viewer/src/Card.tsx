@@ -217,7 +217,7 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
   // and the browser's immutable copy) would keep the previous palette.
   const surfaceSrc = (surfaceIndex: number) =>
     appPath(
-      `/s/${props.post.id}?part=${surfaceIndex}&ver=${props.post.version}&cb=${props.post.version}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}`,
+      `/s/${props.post.id}?part=${surfaceIndex}&ver=${props.post.version}&cb=${props.post.version}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}&render=2`,
     );
 
   const anchoredComments = (surfaceIndex: number) =>
@@ -396,7 +396,7 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
                     for (const [surface, frame] of surfaceFrames) {
                       // `?part=` is the legacy wire query key for a surface index.
                       frame.src = appPath(
-                        `/s/${props.post.id}?part=${surface}&ver=${ver}&cb=${cb}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}`,
+                        `/s/${props.post.id}?part=${surface}&ver=${ver}&cb=${cb}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}&render=2`,
                       );
                     }
                   }}
