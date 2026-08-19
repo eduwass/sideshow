@@ -1119,6 +1119,16 @@ export function createApp({
     );
   });
 
+  app.get("/api/publications/links/:linkId/analytics", (c) =>
+    throughDestination(c, () =>
+      destinationClient!.request(
+        `${linkPath(c.req.param("linkId"))}/analytics?limit=${encodeURIComponent(
+          c.req.query("limit") ?? "50",
+        )}`,
+      ),
+    ),
+  );
+
   app.patch("/api/publications/links/:linkId", async (c) => {
     const body = await c.req.text();
     return throughDestination(c, () =>

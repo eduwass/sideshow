@@ -1,19 +1,26 @@
 import { expect, test } from "vitest";
 import {
+  ANALYTICS_DISCLAIMER,
   CUSTOM_SLUG_WARNING,
   expiryFromInput,
   expiryInputValue,
+  formatCountry,
+  formatDeviceClass,
   formatExpiry,
+  formatOpenAt,
   publicationErrorMessage,
   publicationLinksPath,
   publicationPath,
   publicationsPath,
   type PublicationDetail,
-  type ShareLinkView,
+  retentionNote,
+  type ShareLinkAnalytics,
+  shareLinkAnalyticsPath,
   shareLinkDuplicatePath,
   shareLinkPath,
   shareLinkStatus,
   shareLinkUrl,
+  type ShareLinkView,
 } from "../src/api.ts";
 
 const link = (over: Partial<ShareLinkView> = {}): ShareLinkView => ({
@@ -145,4 +152,76 @@ test("the detail response type describes what the server actually sends", () => 
   // The password hash never reaches the owner — only the boolean does.
   expect(detail.links[0]).not.toHaveProperty("passwordHash");
   expect(detail.links[0].hasPassword).toBe(true);
+});
+
+// --- confirmed opens ---
+
+test("the analytics route is built under the share link, with an optional limit", () => {
+  expect(shareLinkAnalyticsPath("link-1")).toBe("/api/publications/links/link-1/analytics");
+  expect(shareLinkAnalyticsPath("link-1", 20)).toBe(
+    "/api/publications/links/link-1/analytics?limit=20",
+  );
+  expect(shareLinkAnalyticsPath("a/b", 5)).toBe("/api/publications/links/a%2Fb/analytics?limit=5");
+});
+
+test("a device class becomes plain words, and an unknown one is not a blank", () => {
+  expect(formatDeviceClass("mobile")).toBe("Phone");
+  expect(formatDeviceClass("tablet")).toBe("Tablet");
+  expect(formatDeviceClass("desktop")).toBe("Computer");
+  expect(formatDeviceClass(null)).toBe("Unknown device");
+  // Anything the server did not classify reads as unknown rather than as itself.
+  expect(formatDeviceClass("")).toBe("Unknown device");
+  expect(formatDeviceClass("watch")).toBe("Unknown device");
+});
+
+test("a country is shown as its code, and a missing one says so", () => {
+  expect(formatCountry("ES")).toBe("ES");
+  expect(formatCountry("es")).toBe("ES");
+  expect(formatCountry(null)).toBe("Unknown country");
+  expect(formatCountry("")).toBe("Unknown country");
+});
+
+test("a first or last open reads as a date, never as an empty cell", () => {
+  expect(formatOpenAt(null)).toBe("Never");
+  expect(formatOpenAt("nonsense")).toBe("Unknown");
+  expect(formatOpenAt("2026-08-18T12:00:00.000Z")).toMatch(/2026/);
+});
+
+test("the retention note names the window and says the totals outlive it", () => {
+  expect(retentionNote(90)).toContain("90 days");
+  expect(retentionNote(90)).toContain("indefinitely");
+});
+
+test("the disclaimer says these are likely-recipient activity, not proof of identity", () => {
+  expect(ANALYTICS_DISCLAIMER).toContain("likely-recipient activity");
+  expect(ANALYTICS_DISCLAIMER).toContain("not proof of identity");
+  // The two reasons it is only approximate, both of which the owner needs.
+  expect(ANALYTICS_DISCLAIMER).toContain("forwarded");
+  expect(ANALYTICS_DISCLAIMER).toContain("rotating");
+});
+
+test("the analytics response type carries counts and coarse context, and no visitor hash", () => {
+  const analytics: ShareLinkAnalytics = {
+    trackOpens: true,
+    retentionDays: 90,
+    aggregate: {
+      shareLinkId: "link-1",
+      firstOpenAt: "2026-08-01T00:00:00.000Z",
+      lastOpenAt: "2026-08-18T00:00:00.000Z",
+      totalOpens: 3,
+      uniqueVisitors: 2,
+    },
+    events: [
+      {
+        at: "2026-08-18T00:00:00.000Z",
+        deviceClass: "mobile",
+        country: "ES",
+        snapshotId: "snap-2",
+      },
+    ],
+  };
+  expect(analytics.aggregate.uniqueVisitors).toBe(2);
+  // The rotating hash is the server's business and never reaches the dashboard.
+  expect(analytics.events[0]).not.toHaveProperty("visitorHash");
+  expect(analytics.events[0]).not.toHaveProperty("ip");
 });

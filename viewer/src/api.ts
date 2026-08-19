@@ -440,6 +440,88 @@ export function publicationErrorMessage(err: unknown, fallback = "That didn't wo
   return serverErrorMessage(err, fallback);
 }
 
+// --- confirmed opens ---
+//
+// What the owner is allowed to know about a share link's readers, and nothing
+// more: counts, coarse device class, country. The public service never sends
+// the visitor hash or an IP, and there is nothing here to join back to a
+// person — see ANALYTICS_DISCLAIMER, which the dashboard shows beside every
+// one of these numbers rather than burying in a doc.
+
+export interface OpenEventView {
+  at: string;
+  deviceClass: string | null;
+  country: string | null;
+  snapshotId: string;
+}
+
+// Kept forever, unlike the events: the prune below must never take these.
+export interface OpenAggregateView {
+  shareLinkId: string;
+  firstOpenAt: string | null;
+  lastOpenAt: string | null;
+  totalOpens: number;
+  uniqueVisitors: number;
+}
+
+export interface ShareLinkAnalytics {
+  trackOpens: boolean;
+  /** How long detailed events survive; the aggregate above outlives them. */
+  retentionDays: number;
+  aggregate: OpenAggregateView;
+  events: OpenEventView[];
+}
+
+export const ANALYTICS_RECENT_LIMIT = 20;
+
+export function shareLinkAnalyticsPath(linkId: string, limit?: number): string {
+  const base = `${shareLinkPath(linkId)}/analytics`;
+  return limit === undefined ? base : `${base}?limit=${encodeURIComponent(String(limit))}`;
+}
+
+export function shareLinkAnalytics(linkId: string, limit?: number): Promise<ShareLinkAnalytics> {
+  return api<ShareLinkAnalytics>(shareLinkAnalyticsPath(linkId, limit));
+}
+
+// The one sentence that has to travel with these figures. An open says a
+// browser rendered the page behind this link — not who was holding it — and the
+// "unique visitors" count is a rotating keyed hash, so the same person reads as
+// somebody new once the window turns.
+export const ANALYTICS_DISCLAIMER =
+  "This is likely-recipient activity, not proof of identity. A link can be forwarded, and visitors are counted with an approximate, rotating, keyed hash rather than anything that identifies a person.";
+
+export function retentionNote(days: number): string {
+  return `Recent activity is kept for ${days} days. The totals above are kept indefinitely.`;
+}
+
+const DEVICE_LABEL: Record<string, string> = {
+  mobile: "Phone",
+  tablet: "Tablet",
+  desktop: "Computer",
+};
+
+export function formatDeviceClass(deviceClass: string | null): string {
+  return (deviceClass && DEVICE_LABEL[deviceClass]) || "Unknown device";
+}
+
+export function formatCountry(country: string | null): string {
+  return country ? country.toUpperCase() : "Unknown country";
+}
+
+/** A first/last-open timestamp, or a plain "never" rather than a blank cell. */
+export function formatOpenAt(iso: string | null): string {
+  if (!iso) return "Never";
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "Unknown";
+  return new Date(at).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 // A share link's public address. The public service serves a publication at
 // `/v/<slug>` on its own origin, which the dashboard learns from the routes
 // above rather than guessing (a workspace and its destination are different

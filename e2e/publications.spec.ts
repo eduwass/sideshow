@@ -275,7 +275,8 @@ test("the custom-slug field says plainly that a custom address is not a secret",
   expect(sent).toContainEqual({
     method: "POST",
     path: "/api/publications/pub-1/links",
-    body: { trackOpens: false, slug: "taken-name" },
+    // Tracking is on unless the owner unchecks it, matching the server default.
+    body: { trackOpens: true, slug: "taken-name" },
   });
 });
 
