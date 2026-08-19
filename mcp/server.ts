@@ -187,12 +187,14 @@ server.registerTool(
     inputSchema: STDIO_MCP_INPUT_SCHEMAS.waitForFeedback,
   },
   async ({ timeoutSeconds }) => {
-    const session = await ensureSession();
+    if (!sessionId) {
+      return text({ comments: [], note: "publish a post before waiting for feedback" });
+    }
     const wait = timeoutSeconds ?? 120;
     // No client-side cursor: the server resumes author=user reads from the
     // session's agent cursor, shared with piggyback delivery.
     const result = JSON.parse(
-      await api(`/api/comments?session=${session}&author=user&wait=${wait}`),
+      await api(`/api/comments?session=${sessionId}&author=user&wait=${wait}`),
     );
     if (result.comments.length === 0) {
       return text({ comments: [], note: "no user feedback yet — continue, or wait again later" });

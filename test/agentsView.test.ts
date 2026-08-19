@@ -47,7 +47,7 @@ test("resolves a post to the exact AgentsView message and preceding prompt", asy
     agent: "opencode",
     model: "gpt-5.6-sol",
     prompt: "Mock up the mobile navigation",
-    url: "https://agentsview.eduwass.dev/sessions/session-7?msg=42",
+    url: "https://agentsview.eduwass.dev/sessions/opencode%3Asession-7?msg=42",
   });
 });
 

@@ -64,7 +64,7 @@ export async function resolvePostProvenance(
     if (!match || Math.abs(Date.parse(match.timestamp) - createdAt) > 5 * 60_000) return null;
 
     const messagesResponse = await request(
-      `${apiOrigin}/api/v1/sessions/${encodeURIComponent(match.session_id)}/messages?around=${match.ordinal}&before=6&after=0&direction=asc`,
+      `${apiOrigin}/api/v1/sessions/${encodeURIComponent(match.session_id)}/messages?around=${match.ordinal}&before=50&after=0`,
     );
     if (!messagesResponse.ok) return null;
     const messages =
@@ -76,7 +76,6 @@ export async function resolvePostProvenance(
         (message) =>
           message.ordinal < match.ordinal && message.role === "user" && !message.is_system,
       )?.content;
-    const nativeSessionId = match.session_id.replace(/^[^:]+:/, "");
     const publicOrigin = process.env.AGENTSVIEW_PUBLIC_URL ?? "https://agentsview.eduwass.dev";
 
     return {
@@ -86,7 +85,7 @@ export async function resolvePostProvenance(
       agent: match.agent || session.agent,
       model: source?.model ?? null,
       prompt: prompt?.trim().slice(0, 500) || null,
-      url: `${publicOrigin}/sessions/${encodeURIComponent(nativeSessionId)}?msg=${match.ordinal}`,
+      url: `${publicOrigin}/sessions/${encodeURIComponent(match.session_id)}?msg=${match.ordinal}`,
     };
   } catch {
     return null;

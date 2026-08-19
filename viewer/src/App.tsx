@@ -329,6 +329,7 @@ export default function App() {
   // session list changes (incl. the 45s quiet refresh, which keeps the
   // Today/Yesterday split fresh as the day rolls over)
   const sessionGroups = createMemo(() => groupSessions(sessions, new Date()));
+  const shortcutOrder = createMemo(() => sessionGroups().flatMap((group) => group.sessions));
 
   return (
     <Show
@@ -389,7 +390,7 @@ export default function App() {
                           {(s) => (
                             <SessionItem
                               session={s}
-                              shortcut={sessions.indexOf(s) + 1}
+                              shortcut={shortcutOrder().indexOf(s) + 1}
                               showShortcut={shortcutHints()}
                             />
                           )}

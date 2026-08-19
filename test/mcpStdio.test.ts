@@ -501,7 +501,7 @@ test(
 );
 
 test(
-  "stdio MCP wait and upload tools can create the lazy conversation session",
+  "stdio MCP wait stays inert while upload can create the lazy conversation session",
   { timeout: 15_000 },
   async (t) => {
     const app = await serveApp();
@@ -518,13 +518,12 @@ test(
     });
     assert.deepEqual(empty.comments, []);
     const afterWait = await fetchJson<SessionRow[]>(app.url, "/api/sessions");
-    assert.equal(afterWait.length, 1);
-    assert.equal(afterWait[0].agent, "wait-first-agent");
+    assert.equal(afterWait.length, 0);
     const waitPost = await callJson<PostResult>(waitClient.client, "publish_post", {
       title: "after wait",
       surfaces: [{ kind: "markdown", markdown: "same session" }],
     });
-    assert.equal(waitPost.sessionId, afterWait[0].id);
+    assert.ok(waitPost.sessionId);
 
     const uploadClient = await connectMcp(app.url, { SIDESHOW_AGENT: "upload-first-agent" });
     connections.push(uploadClient);

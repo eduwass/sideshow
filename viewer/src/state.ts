@@ -167,7 +167,14 @@ export async function refreshSessionsQuiet() {
     // failed request without rejecting into timer/feed callbacks.
     if (next && requestVersion > latestAppliedSessionRefreshVersion) {
       latestAppliedSessionRefreshVersion = requestVersion;
-      setSessionsInternal(reconcile(next, { key: "id" }));
+      // Uploads and feedback polling may reserve a backing session before its
+      // first post exists. It is storage plumbing, not a navigable workspace.
+      setSessionsInternal(
+        reconcile(
+          next.filter((session) => session.surfaceCount > 0),
+          { key: "id" },
+        ),
+      );
     }
   })();
   latestSessionRefresh = refresh;
