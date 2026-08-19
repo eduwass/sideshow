@@ -71,6 +71,16 @@ export function SettingsIcon() {
   );
 }
 
+export function PublicationsIcon() {
+  return (
+    <Icon>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </Icon>
+  );
+}
+
 export function StreamIcon() {
   return (
     <Icon>
@@ -86,6 +96,18 @@ export function TimelineIcon() {
   return (
     <Icon>
       <path d="M3 12h4l3-8 4 16 3-8h4" />
+    </Icon>
+  );
+}
+
+export function SortIcon(props: { oldestFirst: boolean }) {
+  return (
+    <Icon>
+      <path d={props.oldestFirst ? "m3 8 4-4 4 4" : "m3 16 4 4 4-4"} />
+      <path d="M7 4v16" />
+      <path d="M15 7h6" />
+      <path d="M15 12h4" />
+      <path d="M15 17h2" />
     </Icon>
   );
 }

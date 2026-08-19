@@ -30,6 +30,7 @@ import {
   updateShareLink,
 } from "./api.ts";
 import { writeClipboard } from "./clipboard.ts";
+import { SortIcon } from "./icons.tsx";
 import {
   avatarPreviewUrl,
   type IdentityForm,
@@ -62,6 +63,13 @@ export function Publications() {
   const [extra, setExtra] = createSignal<Record<string, Enrichment>>({});
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [openId, setOpenId] = createSignal<string | null>(null);
+  const [oldestFirst, setOldestFirst] = createSignal(false);
+  const sortedPublications = createMemo(() =>
+    [...(publications() ?? [])].sort((a, b) => {
+      const difference = Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
+      return oldestFirst() ? difference : -difference;
+    }),
+  );
 
   const load = async () => {
     setLoadError(null);
@@ -103,7 +111,20 @@ export function Publications() {
           fallback={
             <>
               <header class="settings-top">
-                <h1>Publications</h1>
+                <div class="settings-title-row">
+                  <h1>Publications</h1>
+                  <button
+                    class="settings-icon-button"
+                    type="button"
+                    title={oldestFirst() ? "Oldest first" : "Newest first"}
+                    data-tooltip={oldestFirst() ? "Oldest first" : "Newest first"}
+                    aria-label={`Sort publications: ${oldestFirst() ? "oldest first" : "newest first"}`}
+                    aria-pressed={oldestFirst()}
+                    onClick={() => setOldestFirst(!oldestFirst())}
+                  >
+                    <SortIcon oldestFirst={oldestFirst()} />
+                  </button>
+                </div>
                 <p>
                   Everything this workspace has published to the web, and the share links that can
                   still open it.
@@ -135,7 +156,7 @@ export function Publications() {
                     }
                   >
                     <ul class="pubs-list">
-                      <For each={list()}>
+                      <For each={sortedPublications()}>
                         {(publication) => (
                           <li>
                             <button

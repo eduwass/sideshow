@@ -16,6 +16,7 @@ import {
   setFeedbackStatus,
 } from "./api.ts";
 import { writeClipboard } from "./clipboard.ts";
+import { CommentIcon } from "./icons.tsx";
 import {
   applyStatus,
   feedbackConfigured,
@@ -337,7 +338,7 @@ function FeedbackRow(props: {
 // inbox's own routes, never the agent stream. The poller is destination-gated
 // (see feedbackInbox.ts), and the entry itself only appears once a destination
 // answers: without one there is nothing published to comment on.
-export function FeedbackLink(props: { onOpen: () => void; href: string }) {
+export function FeedbackLink(props: { onOpen: () => void; href: string; iconOnly?: boolean }) {
   onMount(() => {
     onCleanup(startFeedbackPolling());
   });
@@ -345,14 +346,20 @@ export function FeedbackLink(props: { onOpen: () => void; href: string }) {
     <Show when={feedbackConfigured()}>
       <a
         class="fb-nav"
+        classList={{ "foot-icon": props.iconOnly }}
         href={props.href}
+        title={props.iconOnly ? "Feedback" : undefined}
+        data-tooltip={props.iconOnly ? "Feedback" : undefined}
+        aria-label={props.iconOnly ? "Feedback" : undefined}
         onClick={(e) => {
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
           e.preventDefault();
           props.onOpen();
         }}
       >
-        feedback
+        <Show when={props.iconOnly} fallback={<>feedback</>}>
+          <CommentIcon />
+        </Show>
         <Show when={feedbackUnread() > 0}>
           <span class="fb-badge" aria-label={`${feedbackUnread()} unread comments`}>
             {feedbackUnread()}

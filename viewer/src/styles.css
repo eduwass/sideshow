@@ -386,8 +386,40 @@ aside {
 .aside-foot {
   display: flex;
   justify-content: flex-end;
+  gap: 4px;
   padding: 8px 10px;
   border-top: 0.5px solid var(--border);
+}
+.foot-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  color: var(--muted);
+  text-decoration: none;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+.foot-icon:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.foot-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.foot-icon .fb-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 16px;
 }
 .settings-button {
   display: grid;
@@ -1758,6 +1790,32 @@ iframe {
 .settings-top {
   padding-bottom: 18px;
   border-bottom: 0.5px solid var(--border);
+}
+.settings-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-icon-button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 8px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.settings-icon-button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.settings-icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 .settings-top h1 {
   font-size: 20px;

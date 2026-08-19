@@ -43,6 +43,7 @@ import {
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PlugIcon,
+  PublicationsIcon,
   SessionsIcon,
   SettingsIcon,
   ShareIcon,
@@ -416,6 +417,18 @@ export default function App() {
                   </Show>
                 </div>
                 <div class="aside-foot">
+                  <Show when={!isReadonly()}>
+                    <PublicationsLink iconOnly />
+                    <FeedbackLink
+                      iconOnly
+                      href={appPath("/feedback")}
+                      onOpen={() => {
+                        history.pushState(null, "", appPath("/feedback"));
+                        setFullPage("feedback");
+                        setMoreOpen(false);
+                      }}
+                    />
+                  </Show>
                   <button
                     class="settings-button"
                     type="button"
@@ -520,15 +533,6 @@ export default function App() {
                   </a>
                   <Show when={!isReadonly()}>
                     <a href={appPath("/connect")}>connect agent</a>
-                    <PublicationsLink />
-                    <FeedbackLink
-                      href={appPath("/feedback")}
-                      onOpen={() => {
-                        history.pushState(null, "", appPath("/feedback"));
-                        setFullPage("feedback");
-                        setMoreOpen(false);
-                      }}
-                    />
                   </Show>
                 </div>
               </slot>
@@ -1083,7 +1087,7 @@ function Onboard() {
 // destination proxy, every route of which answers 503 without a configured
 // destination, so the entry is offered but disabled — carrying the same
 // explanation the card share menu gives — rather than silently absent.
-function PublicationsLink() {
+function PublicationsLink(props: { iconOnly?: boolean }) {
   const [destination, setDestination] = createSignal<PublishDestination | null>(null);
   onMount(() => {
     publishDestination()
@@ -1100,16 +1104,23 @@ function PublicationsLink() {
       fallback={
         <button
           class="foot-link"
+          classList={{ "foot-icon": props.iconOnly }}
           type="button"
           disabled
           title={destination() ? NO_DESTINATION : undefined}
         >
-          publications
+          <Show when={props.iconOnly} fallback={<>publications</>}>
+            <PublicationsIcon />
+          </Show>
         </button>
       }
     >
       <a
         href={appPath("/publications")}
+        classList={{ "foot-icon": props.iconOnly }}
+        title={props.iconOnly ? "Publications" : undefined}
+        data-tooltip={props.iconOnly ? "Publications" : undefined}
+        aria-label={props.iconOnly ? "Publications" : undefined}
         onClick={(e) => {
           // A real anchor, so middle-click / copy-link / open-in-new-tab all
           // behave; a plain left click switches view in place instead of
@@ -1123,7 +1134,9 @@ function PublicationsLink() {
           setNavOpen(false);
         }}
       >
-        publications
+        <Show when={props.iconOnly} fallback={<>publications</>}>
+          <PublicationsIcon />
+        </Show>
       </a>
     </Show>
   );
