@@ -48,6 +48,8 @@ import {
   type TraceStep,
 } from "./types.ts";
 import { validateSurfaces } from "./postSurfaces.ts";
+import { buildFeedbackPrompt, type FeedbackPromptEntry } from "./feedbackPrompt.ts";
+import type { ExternalFeedback, Publication, ShareLink, Snapshot } from "./publicationTypes.ts";
 import {
   collectionPreview,
   frozenCollection,
@@ -258,6 +260,11 @@ function parseRecentLimit(raw: string | undefined): number {
 }
 
 function isPublicReadAllowed(path: string, mode: PublicReadMode): boolean {
+  // Owner-only, in EVERY mode — checked before "full" opens the rest. The
+  // external feedback inbox carries a client's name, email and note plus the
+  // frozen surfaces they were written against (docs/adr/0003); a public-read
+  // visitor of this workspace is not the owner and must never read them.
+  if (path === "/api/feedback" || path.startsWith("/api/feedback/")) return false;
   if (mode === "full") return true;
   if (path.startsWith("/session/")) return true;
   if (path.startsWith("/s/")) return true;
@@ -1117,6 +1124,149 @@ export function createApp({
         body: body || "{}",
       }),
     );
+  });
+
+  // --- external feedback inbox ---
+  //
+  // A deliberately separate stream from the trusted comment→agent channel
+  // (docs/adr/0003): this is polled over its own routes, never delivered through
+  // /api/events or the comment cursor, and nothing here reaches an agent without
+  // the owner copying it by hand.
+
+  // Feedback plus the context needed to read it: which publication, which
+  // revision, which post and surface, and the exact frozen surface URL.
+  const withOriginOf = async (c: Context, rows: ExternalFeedback[]) => {
+    const publicationCache = new Map<
+      string,
+      { publication: Publication; snapshots: Snapshot[]; links: ShareLink[] }
+    >();
+    const detail = async (id: string) => {
+      const cached = publicationCache.get(id);
+      if (cached) return cached;
+      const fetched = await destinationClient!.request<{
+        publication: Publication;
+        snapshots: Snapshot[];
+        links: ShareLink[];
+      }>(`${publicationPath(id)}`);
+      publicationCache.set(id, fetched);
+      return fetched;
+    };
+    const snapshotCache = new Map<string, Snapshot>();
+    const snapshot = async (id: string) => {
+      const cached = snapshotCache.get(id);
+      if (cached) return cached;
+      const fetched = await destinationClient!.request<Snapshot>(
+        owner(`/snapshots/${encodeURIComponent(id)}`),
+      );
+      snapshotCache.set(id, fetched);
+      return fetched;
+    };
+    return Promise.all(
+      rows.map(async (feedback) => {
+        const { publication, links } = await detail(feedback.publicationId);
+        const snap = await snapshot(feedback.snapshotId);
+        const item = snap.items[feedback.anchor.itemIndex];
+        const surface = item?.surfaces[feedback.anchor.surfaceIndex];
+        const link = links.find((l) => l.id === feedback.shareLinkId);
+        return {
+          feedback,
+          publicationTitle: publication.title,
+          publicationId: publication.id,
+          snapshotRevision: snap.revision,
+          itemTitle: item?.title ?? "Untitled",
+          surfaceKind: surface?.kind ?? "unknown",
+          // Served back through this private origin so the browser never needs
+          // the destination's token.
+          surfaceUrl:
+            `${new URL(c.req.url).origin}${requestBasePath(c.req.raw)}/api/feedback/s/` +
+            `${encodeURIComponent(feedback.snapshotId)}/${feedback.anchor.itemIndex}/` +
+            `${feedback.anchor.surfaceIndex}`,
+          recipientLabel: link?.recipientLabel ?? null,
+        };
+      }),
+    );
+  };
+
+  app.get("/api/feedback", (c) =>
+    throughDestination(c, async () => {
+      const params = new URLSearchParams();
+      for (const key of ["publicationId", "shareLinkId", "snapshotId", "status"]) {
+        const value = c.req.query(key);
+        if (value) params.set(key, value);
+      }
+      const rows = await destinationClient!.request<ExternalFeedback[]>(
+        `${owner("/feedback")}${params.size ? `?${params}` : ""}`,
+      );
+      const all = await destinationClient!.request<ExternalFeedback[]>(
+        `${owner("/feedback")}?status=unread`,
+      );
+      return { unread: all.length, feedback: await withOriginOf(c, rows) };
+    }),
+  );
+
+  // The status set is validated here, not only at the destination: a
+  // destination refusal comes back as a 502 (its errors are not this API's
+  // errors), and "you sent a status that does not exist" is a 400 the viewer
+  // can show.
+  const FEEDBACK_STATUSES = ["unread", "read", "resolved", "rejected"];
+
+  app.patch("/api/feedback/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof body.status !== "string" || !FEEDBACK_STATUSES.includes(body.status)) {
+      return c.json({ error: "invalid status" }, 400);
+    }
+    return throughDestination(c, () =>
+      destinationClient!.request(owner(`/feedback/${encodeURIComponent(c.req.param("id"))}`), {
+        method: "PATCH",
+        body: JSON.stringify({ status: body.status }),
+      }),
+    );
+  });
+
+  // Re-serve one historical snapshot surface from this origin, under the same
+  // `sandbox` CSP header the public service uses — so the owner can reopen the
+  // exact content a submission was written against, and the destination token
+  // never leaves the server.
+  app.get("/api/feedback/s/:snapshotId/:item/:surface", async (c) => {
+    if (!destinationClient) return c.text("no publication destination", 503);
+    const query = new URLSearchParams();
+    for (const key of ["theme", "mode"]) {
+      const value = c.req.query(key);
+      if (value) query.set(key, value);
+    }
+    const path =
+      owner(
+        `/snapshots/${encodeURIComponent(c.req.param("snapshotId"))}/s/` +
+          `${encodeURIComponent(c.req.param("item"))}/${encodeURIComponent(c.req.param("surface"))}`,
+      ) + (query.size ? `?${query}` : "");
+    try {
+      const html = await destinationClient.requestText(path);
+      c.header("X-Content-Type-Options", "nosniff");
+      c.header("Content-Security-Policy", "sandbox allow-scripts");
+      c.header("Cache-Control", "private, max-age=3600");
+      return c.html(html);
+    } catch {
+      return c.text("No renderable surface there", 404);
+    }
+  });
+
+  app.post("/api/feedback/prompt", async (c) => {
+    if (!destinationClient) return c.json({ error: "no publication destination" }, 503);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids)
+      ? body.ids.filter((id): id is string => typeof id === "string")
+      : [];
+    if (ids.length === 0) return c.json({ error: "select some feedback first" }, 400);
+    try {
+      const all = await destinationClient.request<ExternalFeedback[]>(owner("/feedback"));
+      const wanted = new Set(ids);
+      const rows = all.filter((row) => wanted.has(row.id));
+      if (rows.length === 0) return c.json({ error: "not found" }, 404);
+      const entries = (await withOriginOf(c, rows)) as FeedbackPromptEntry[];
+      return c.json({ prompt: buildFeedbackPrompt(entries) });
+    } catch (err) {
+      return destinationFailure(c, err);
+    }
   });
 
   app.get("/api/publications/links/:linkId/analytics", (c) =>

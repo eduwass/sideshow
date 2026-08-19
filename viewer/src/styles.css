@@ -3297,3 +3297,188 @@ iframe {
     content: none;
   }
 }
+
+/* External feedback inbox — client comments on published artifacts, grouped
+   publication → share link → revision → surface. Shares the settings-page
+   column and the .publish-btn family with the publications dashboard. */
+.fb-nav {
+  white-space: nowrap;
+}
+.fb-badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-align: center;
+}
+.fb-unread-total {
+  color: var(--accent);
+}
+.fb-boundary {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+  margin: 10px 0 0;
+}
+.fb-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 18px 0 6px;
+}
+.fb-filters {
+  display: flex;
+  gap: 6px;
+}
+.fb-filter {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.fb-filter.on {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.fb-pub {
+  margin-top: 22px;
+}
+.fb-pub > h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.fb-count,
+.fb-kind {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+.fb-link > h3 {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 10px 0 2px;
+}
+.fb-snap > h4 {
+  font-size: 12px;
+  color: var(--faint);
+  margin: 8px 0 2px;
+}
+.fb-surface > h5 {
+  font-size: 12px;
+  margin: 6px 0 4px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.fb-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fb-item {
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  margin-bottom: 8px;
+  padding: 4px 10px;
+}
+.fb-item.unread {
+  border-left: 2px solid var(--accent);
+}
+.fb-item-head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.fb-select {
+  padding-top: 12px;
+}
+.fb-open {
+  flex: 1;
+  display: block;
+  text-align: left;
+  font-family: inherit;
+  color: var(--text);
+  background: none;
+  border: 0;
+  padding: 10px 0;
+  cursor: pointer;
+}
+.fb-note {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.fb-meta {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 4px;
+}
+.fb-detail {
+  border-top: 0.5px solid var(--border);
+  padding: 10px 0;
+}
+.fb-received,
+.fb-historical {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin: 0 0 8px;
+}
+.fb-quote {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--accent);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+.fb-frame-wrap {
+  position: relative;
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.fb-frame {
+  display: block;
+  width: 100%;
+  height: 420px;
+  border: 0;
+  background: var(--bg);
+}
+/* The point a client clicked, drawn over the frozen surface at the normalized
+   coordinates it was recorded at. */
+.fb-point {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg);
+  pointer-events: none;
+}
+.fb-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}

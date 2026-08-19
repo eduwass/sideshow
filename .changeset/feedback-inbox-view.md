@@ -1,0 +1,5 @@
+---
+"sideshow": minor
+---
+
+Review client feedback and copy an agent prompt. The private viewer gains a feedback inbox: comments left on published artifacts, grouped by publication, share link, revision and surface, with an unread badge in the sidebar and beside the publications dashboard. Opening a submission reopens the exact frozen surface it was written against, in a sandboxed iframe — the stored quote alongside it for a highlight, a marker at the recorded coordinates for a point — and marks it read; submissions can be marked read, resolved or rejected, and the list filtered by status. Selecting one or more copies a structured prompt (comment, anchor, publication, revision, exact surface URL) to the clipboard, and that is the only way any of it moves: nothing is ever handed to an agent automatically, and the inbox stays off the trusted comment→agent stream, polling its own routes on an interval and on window focus instead. The inbox is also owner-only on a public-read workspace, where an unauthenticated reader could previously have read it.

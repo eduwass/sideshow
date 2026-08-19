@@ -31,6 +31,7 @@ import { host, isShadow, navHostEl, root, SLOTS } from "./host.ts";
 import { applyFrameHeight, Card, cardForPost, frameForSource } from "./Card.tsx";
 import { ConnectInstructions } from "./Connect.tsx";
 import { renderNotes } from "./notes.ts";
+import { FeedbackInbox, FeedbackLink } from "./FeedbackInbox.tsx";
 import { Publications } from "./Publications.tsx";
 import { PublishSessionDialog } from "./PublishSessionDialog.tsx";
 import { SessionTimeline } from "./SessionTimeline.tsx";
@@ -91,7 +92,7 @@ import {
 // path directly, in this one helper, rather than through the router. An
 // embedding host takes the whole pane over via SLOTS.main instead, so neither
 // view ever renders inside a shadow root.
-type FullPageView = "connect" | "publications" | null;
+type FullPageView = "connect" | "publications" | "feedback" | null;
 
 function fullPageFromPath(): FullPageView {
   const basePath = window.__SIDESHOW_BASE_PATH__ ?? "";
@@ -100,6 +101,7 @@ function fullPageFromPath(): FullPageView {
     : location.pathname;
   if (rest === "/connect") return "connect";
   if (rest === "/publications") return "publications";
+  if (rest === "/feedback") return "feedback";
   return null;
 }
 const [fullPage, setFullPage] = createSignal<FullPageView>(fullPageFromPath());
@@ -355,6 +357,15 @@ export default function App() {
                     <Show when={!isReadonly()}>
                       &nbsp;·&nbsp; <a href={appPath("/connect")}>connect agent</a>
                       &nbsp;·&nbsp; <PublicationsLink />
+                      &nbsp;·&nbsp;{" "}
+                      <FeedbackLink
+                        href={appPath("/feedback")}
+                        onOpen={() => {
+                          history.pushState(null, "", appPath("/feedback"));
+                          setFullPage("feedback");
+                          setNavOpen(false);
+                        }}
+                      />
                     </Show>
                   </slot>
                 </div>
@@ -384,6 +395,9 @@ export default function App() {
                   </Match>
                   <Match when={fullPage() === "publications"}>
                     <Publications />
+                  </Match>
+                  <Match when={fullPage() === "feedback"}>
+                    <FeedbackInbox />
                   </Match>
                 </Switch>
               </slot>
