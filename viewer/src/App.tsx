@@ -37,12 +37,19 @@ import { PublishSessionDialog } from "./PublishSessionDialog.tsx";
 import { SessionTimeline } from "./SessionTimeline.tsx";
 import { StreamSkeleton } from "./Skeleton.tsx";
 import {
+  CommentIcon,
+  MoreIcon,
   MoonIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PlugIcon,
+  SessionsIcon,
+  SettingsIcon,
+  ShareIcon,
+  StreamIcon,
   SunIcon,
   SystemIcon,
+  TimelineIcon,
 } from "./icons.tsx";
 import {
   activeTheme,
@@ -152,6 +159,8 @@ function pageTitle(
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
+  const [moreOpen, setMoreOpen] = createSignal(false);
+  const [shortcutHints, setShortcutHints] = createSignal(false);
   let edgeSwipe: { pointerId: number; x: number; y: number } | undefined;
 
   const startEdgeSwipe = (event: PointerEvent) => {
@@ -243,6 +252,28 @@ export default function App() {
     // sidebar — Down moves to the next session in the list, Up the previous.
     const onKeydown = (e: KeyboardEvent) => {
       if (streamMode()) return;
+      if (e.key === "Escape") {
+        setMoreOpen(false);
+        setNavOpen(false);
+      }
+      if (e.key === "Meta") setShortcutHints(true);
+      if (
+        e.metaKey &&
+        /^[1-9]$/.test(e.key) &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement) &&
+        !(e.target instanceof HTMLSelectElement) &&
+        !(e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
+        const session = sessions[Number(e.key) - 1];
+        if (session) {
+          e.preventDefault();
+          setFullPage(null);
+          select(session.id);
+          setNavOpen(false);
+        }
+        return;
+      }
       if (!e.metaKey || !e.altKey || e.ctrlKey || e.shiftKey) return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -252,8 +283,16 @@ export default function App() {
         void selectAdjacent(-1);
       }
     };
+    const onKeyup = (e: KeyboardEvent) => {
+      if (e.key === "Meta") setShortcutHints(false);
+    };
+    const clearShortcutHints = () => setShortcutHints(false);
     window.addEventListener("keydown", onKeydown);
+    window.addEventListener("keyup", onKeyup);
+    window.addEventListener("blur", clearShortcutHints);
     onCleanup(() => window.removeEventListener("keydown", onKeydown));
+    onCleanup(() => window.removeEventListener("keyup", onKeyup));
+    onCleanup(() => window.removeEventListener("blur", clearShortcutHints));
     // Routing: the host tells us when the route changes (back/forward).
     onCleanup(
       host().router.subscribe((route) => {
@@ -343,7 +382,15 @@ export default function App() {
                     {(group) => (
                       <>
                         <div class="sess-group">{group.label}</div>
-                        <For each={group.sessions}>{(s) => <SessionItem session={s} />}</For>
+                        <For each={group.sessions}>
+                          {(s) => (
+                            <SessionItem
+                              session={s}
+                              shortcut={sessions.indexOf(s) + 1}
+                              showShortcut={shortcutHints()}
+                            />
+                          )}
+                        </For>
                       </>
                     )}
                   </For>
@@ -369,42 +416,28 @@ export default function App() {
                   </Show>
                 </div>
                 <div class="aside-foot">
-                  {/* ThemePicker is a generic feature, not deployment-specific
-                  guidance — it stays engine-owned and works under any host. */}
-                  <Show when={!isReadonly()}>
-                    <ThemePicker />
-                  </Show>
-                  {/* Host-overridable region (SLOTS.asideFoot): the footer's
-                  instructional links/actions. An embedder projects
-                  deployment-appropriate ones here; the children below are the
-                  self-hosted fallback — shown verbatim when nothing is projected
-                  (and outside a shadow root, where <slot> just renders them). */}
-                  <slot name={SLOTS.asideFoot}>
-                    <a href="/guide" target="_blank">
-                      design guide
-                    </a>{" "}
-                    &nbsp;·&nbsp;{" "}
-                    <a href="/setup" target="_blank">
-                      agent setup
-                    </a>{" "}
-                    <Show when={!isReadonly()}>
-                      &nbsp;·&nbsp; <a href={appPath("/connect")}>connect agent</a>
-                      &nbsp;·&nbsp; <PublicationsLink />
-                      &nbsp;·&nbsp;{" "}
-                      <FeedbackLink
-                        href={appPath("/feedback")}
-                        onOpen={() => {
-                          history.pushState(null, "", appPath("/feedback"));
-                          setFullPage("feedback");
-                          setNavOpen(false);
-                        }}
-                      />
-                    </Show>
-                  </slot>
+                  <button
+                    class="settings-button"
+                    type="button"
+                    title="Settings"
+                    aria-label="Settings"
+                    aria-expanded={moreOpen()}
+                    onClick={() => setMoreOpen(!moreOpen())}
+                  >
+                    <SettingsIcon />
+                  </button>
                 </div>
               </aside>
             </Show>
             <main
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget || event.key !== "ArrowLeft") return;
+                event.preventDefault();
+                [...root().querySelectorAll<HTMLElement>(".sess[data-id]")]
+                  .find((item) => item.dataset.id === selected())
+                  ?.focus();
+              }}
               onScroll={() => {
                 if (nearBottom()) setPillTarget(null);
               }}
@@ -435,7 +468,71 @@ export default function App() {
                 </Switch>
               </slot>
             </main>
+            <Show when={!streamMode()}>
+              <nav class="mobile-dock" aria-label="Mobile navigation">
+                <button type="button" title="Sessions" onClick={() => setNavOpen(true)}>
+                  <SessionsIcon />
+                  <span>Sessions</span>
+                </button>
+                <button
+                  type="button"
+                  title="Feedback"
+                  classList={{ active: fullPage() === "feedback" }}
+                  onClick={() => {
+                    history.pushState(null, "", appPath("/feedback"));
+                    setFullPage("feedback");
+                    setMoreOpen(false);
+                    setNavOpen(false);
+                  }}
+                >
+                  <CommentIcon />
+                  <span>Feedback</span>
+                </button>
+                <button
+                  type="button"
+                  title="More"
+                  classList={{ active: moreOpen() }}
+                  aria-expanded={moreOpen()}
+                  onClick={() => {
+                    setNavOpen(false);
+                    setMoreOpen(!moreOpen());
+                  }}
+                >
+                  <MoreIcon />
+                  <span>More</span>
+                </button>
+              </nav>
+            </Show>
           </div>
+          <Show when={moreOpen()}>
+            <div class="more-panel" role="dialog" aria-label="Settings and links">
+              <Show when={!isReadonly()}>
+                <ThemePicker />
+              </Show>
+              <slot name={SLOTS.asideFoot}>
+                <div class="more-links">
+                  <a href="/guide" target="_blank">
+                    design guide
+                  </a>
+                  <a href="/setup" target="_blank">
+                    agent setup
+                  </a>
+                  <Show when={!isReadonly()}>
+                    <a href={appPath("/connect")}>connect agent</a>
+                    <PublicationsLink />
+                    <FeedbackLink
+                      href={appPath("/feedback")}
+                      onOpen={() => {
+                        history.pushState(null, "", appPath("/feedback"));
+                        setFullPage("feedback");
+                        setMoreOpen(false);
+                      }}
+                    />
+                  </Show>
+                </div>
+              </slot>
+            </div>
+          </Show>
           <Show when={!streamMode()}>
             <div id="scrim" onClick={() => setNavOpen(false)}></div>
             <div
@@ -644,8 +741,20 @@ function isOwnFrame(source: unknown): boolean {
   return false;
 }
 
-function SessionItem(props: { session: SessionRow }) {
+function SessionItem(props: { session: SessionRow; shortcut: number; showShortcut: boolean }) {
   const label = () => sessionLabel(props.session);
+  const focusMain = () => (root().querySelector("main") as HTMLElement | null)?.focus();
+  const moveFocus = (direction: -1 | 1) => {
+    const items = [...root().querySelectorAll<HTMLElement>(".sess[data-id]")];
+    const current = items.indexOf(root().activeElement as HTMLElement);
+    items[(current + direction + items.length) % items.length]?.focus();
+  };
+  const open = () => {
+    setFullPage(null);
+    select(props.session.id);
+    setNavOpen(false);
+    requestAnimationFrame(focusMain);
+  };
   return (
     <div
       class="sess"
@@ -656,17 +765,32 @@ function SessionItem(props: { session: SessionRow }) {
       }}
       data-id={props.session.id}
       role="button"
-      tabIndex={0}
+      tabIndex={props.session.id === selected() ? 0 : -1}
       aria-current={props.session.id === selected() ? "true" : undefined}
       onClick={() => {
         setFullPage(null);
         select(props.session.id);
       }}
       onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          moveFocus(e.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          open();
+          return;
+        }
+        if (e.key === "Tab" && !e.shiftKey) {
+          e.preventDefault();
+          focusMain();
+          return;
+        }
         if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
-          setFullPage(null);
-          select(props.session.id);
+          open();
         }
       }}
     >
@@ -681,6 +805,9 @@ function SessionItem(props: { session: SessionRow }) {
         {props.session.agent} · {relTime(props.session.lastActiveAt)}
       </div>
       <span class="dot"></span>
+      <Show when={props.showShortcut && props.shortcut <= 9}>
+        <kbd class="sess-shortcut">{props.shortcut}</kbd>
+      </Show>
       <Show when={!isReadonly()}>
         <button
           class="x"
@@ -824,10 +951,19 @@ function PublishSessionAction(props: { sessionId: string }) {
         class="publish-session"
         type="button"
         disabled={!usable()}
-        title={destination() && !usable() ? NO_DESTINATION : undefined}
+        title={
+          destination() && !usable()
+            ? NO_DESTINATION
+            : publication()?.published
+              ? "Update publication"
+              : "Publish session"
+        }
         onClick={() => usable() && setOpen(true)}
       >
-        {publication()?.published ? "Update publication" : "Publish session…"}
+        <ShareIcon />
+        <span class="sr-only">
+          {publication()?.published ? "Update publication" : "Publish session"}
+        </span>
       </button>
       <Show when={open()}>
         <PublishSessionDialog
@@ -848,17 +984,21 @@ function ViewToggle() {
     <div class="view-toggle" role="group" aria-label="View mode">
       <button
         classList={{ on: viewMode() === "stream" }}
+        title="Stream"
         aria-pressed={viewMode() === "stream"}
         onClick={() => setViewMode("stream")}
       >
-        Stream
+        <StreamIcon />
+        <span class="sr-only">Stream</span>
       </button>
       <button
         classList={{ on: viewMode() === "timeline" }}
+        title="Timeline"
         aria-pressed={viewMode() === "timeline"}
         onClick={() => setViewMode("timeline")}
       >
-        Timeline
+        <TimelineIcon />
+        <span class="sr-only">Timeline</span>
       </button>
     </div>
   );
