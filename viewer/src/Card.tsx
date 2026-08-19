@@ -13,12 +13,14 @@ import {
   api,
   appPath,
   isReadonly,
+  postProvenance,
   relTime,
   sessionLabel,
   type CommentAnchor,
   type ImageSurface as ImageSurfaceData,
   type JsonSurface as JsonSurfaceData,
   type Post,
+  type PostProvenance,
   type TraceSurface as TraceSurfaceData,
   type ViewerPost,
 } from "./api.ts";
@@ -202,6 +204,7 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
   const [anchorDraft, setAnchorDraft] = createSignal<CommentAnchor | null>(null);
   const [fullscreenSurface, setFullscreenSurface] = createSignal<FullscreenSurface | null>(null);
   const [recentUpdateNow, setRecentUpdateNow] = createSignal(Date.now());
+  const [provenance, setProvenance] = createSignal<PostProvenance | null>(null);
   let stopPoll: (() => void) | undefined;
 
   const surfaceTitle = (surfaceIndex: number) =>
@@ -316,6 +319,11 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
   });
 
   onMount(() => {
+    if (!props.standalone && !isReadonly()) {
+      void postProvenance(props.post.id)
+        .then(setProvenance)
+        .catch(() => {});
+    }
     // Key by a token UNIQUE to this Card instance, never by post.id — see cardEls.
     const token = {};
     cardEls.set(token, { id: props.post.id, card, iframes });
@@ -406,6 +414,23 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
           <span class="card-meta">{relTime(props.post.updatedAt)}</span>
         </Show>
       </div>
+      <Show when={provenance()} keyed>
+        {(source) => (
+          <details class="card-provenance">
+            <summary>
+              {source.agent}
+              <Show when={source.model}> · {source.model}</Show> · message {source.messageOrdinal}
+            </summary>
+            <div>
+              <time datetime={source.timestamp}>{new Date(source.timestamp).toLocaleString()}</time>
+              <Show when={source.prompt}>{(prompt) => <blockquote>{prompt()}</blockquote>}</Show>
+              <a href={source.url} target="_blank" rel="noopener noreferrer">
+                Open exact conversation
+              </a>
+            </div>
+          </details>
+        )}
+      </Show>
       {/* Surfaces render in order, dispatched by kind. Each kind is an explicit
           Match; the fallback is reserved for a kind this viewer build doesn't
           know — which happens when a long-open tab predates a newly added

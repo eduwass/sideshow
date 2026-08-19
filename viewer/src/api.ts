@@ -67,6 +67,16 @@ export interface VersionInfo {
   notes?: string | null;
 }
 
+export interface PostProvenance {
+  sessionId: string;
+  messageOrdinal: number;
+  timestamp: string;
+  agent: string;
+  model: string | null;
+  prompt: string | null;
+  url: string;
+}
+
 declare global {
   interface Window {
     // __SIDESHOW_BASE_PATH__ lives in host.ts (the default host reads it).
@@ -165,6 +175,13 @@ export async function apiText(path: string): Promise<string> {
   const res = await fetch(appPath(path));
   if (!res.ok) throw new Error(String(res.status));
   return res.text();
+}
+
+export async function postProvenance(postId: string): Promise<PostProvenance | null> {
+  const result = await api<{ provenance: PostProvenance | null }>(
+    `/api/posts/${encodeURIComponent(postId)}/provenance`,
+  );
+  return result.provenance;
 }
 
 export const sessionLabel = (s: Session) => s.title || s.agent + " session";

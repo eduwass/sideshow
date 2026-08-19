@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
+import { resolvePostProvenance } from "./agentsView.ts";
 import { decodeBase64 } from "./base64.ts";
 import {
   feedbackView,
@@ -1680,6 +1681,13 @@ export function createApp({
     const post = await store.getPost(c.req.param("id"));
     if (!post) return c.json({ error: "post not found" }, 404);
     return c.json(viewerPostView(post));
+  });
+  app.get("/api/posts/:id/provenance", async (c) => {
+    const post = await store.getPost(c.req.param("id"));
+    if (!post) return c.json({ error: "post not found" }, 404);
+    const session = await store.getSession(post.sessionId);
+    if (!session) return c.json({ provenance: null });
+    return c.json({ provenance: await resolvePostProvenance(post, session) });
   });
   // The post flattened to portable markdown — what the viewer's share menu
   // copies, and the same text on the CLI/HTTP tiers. Another canonical post
