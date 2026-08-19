@@ -77,10 +77,20 @@ export function FeedbackInbox() {
 
   // Opening an unread submission marks it read — that is what "opening" means
   // here, so it does not need a second click to say so.
+  //
+  // The status change lands FIRST, then the detail opens. A status change
+  // re-renders the row (the list is rendered from the server's objects by
+  // identity), and doing that after the detail was on screen would rebuild the
+  // iframe holding the frozen surface — a visible reload a moment after the
+  // owner opened it.
   const open = async (entry: FeedbackEntry) => {
     const id = entry.feedback.id;
-    setOpenId(openId() === id ? null : id);
-    if (openId() === id && entry.feedback.status === "unread") await mark(id, "read");
+    if (openId() === id) {
+      setOpenId(null);
+      return;
+    }
+    if (entry.feedback.status === "unread") await mark(id, "read");
+    setOpenId(id);
   };
 
   const mark = async (id: string, status: FeedbackStatus) => {

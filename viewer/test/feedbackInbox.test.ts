@@ -12,7 +12,7 @@ import {
   feedbackStatusPath,
   feedbackSurfaceSrc,
 } from "../src/api.ts";
-import { groupFeedback, linkLabel } from "../src/feedbackInbox.ts";
+import { groupFeedback, linkLabel, sameFeedback } from "../src/feedbackInbox.ts";
 
 const feedback = (over: Partial<ExternalFeedback> = {}): ExternalFeedback => ({
   id: "fb-1",
@@ -138,4 +138,17 @@ test("a link with no recipient label still names itself", () => {
 test("an untitled publication is grouped under a readable name", () => {
   expect(groupFeedback([entry({ publicationTitle: "" })])[0]!.title).toBe("Untitled");
   expect(groupFeedback([])).toEqual([]);
+});
+
+test("a poll that found nothing new is recognised as unchanged", () => {
+  // The list is rendered from these objects by identity, so re-setting an equal
+  // payload would rebuild every row — including an open submission's iframe.
+  const rows = [entry(), entry({ feedback: feedback({ id: "fb-2" }) })];
+  expect(sameFeedback(rows, [entry(), entry({ feedback: feedback({ id: "fb-2" }) })])).toBe(true);
+  expect(sameFeedback(rows, [entry()])).toBe(false);
+  expect(sameFeedback(rows, [entry({ feedback: feedback({ status: "read" }) }), rows[1]!])).toBe(
+    false,
+  );
+  // Nothing loaded yet is never "unchanged" — the first payload must land.
+  expect(sameFeedback(null, [])).toBe(false);
 });
