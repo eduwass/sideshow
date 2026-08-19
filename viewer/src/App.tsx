@@ -420,6 +420,7 @@ export default function App() {
                     class="settings-button"
                     type="button"
                     title="Settings"
+                    data-tooltip="Settings"
                     aria-label="Settings"
                     aria-expanded={moreOpen()}
                     onClick={() => setMoreOpen(!moreOpen())}
@@ -958,6 +959,7 @@ function PublishSessionAction(props: { sessionId: string }) {
               ? "Update publication"
               : "Publish session"
         }
+        data-tooltip={publication()?.published ? "Update publication" : "Publish session"}
         onClick={() => usable() && setOpen(true)}
       >
         <ShareIcon />
@@ -985,6 +987,7 @@ function ViewToggle() {
       <button
         classList={{ on: viewMode() === "stream" }}
         title="Stream"
+        data-tooltip="Stream"
         aria-pressed={viewMode() === "stream"}
         onClick={() => setViewMode("stream")}
       >
@@ -994,6 +997,7 @@ function ViewToggle() {
       <button
         classList={{ on: viewMode() === "timeline" }}
         title="Timeline"
+        data-tooltip="Timeline"
         aria-pressed={viewMode() === "timeline"}
         onClick={() => setViewMode("timeline")}
       >
