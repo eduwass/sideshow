@@ -152,6 +152,35 @@ function pageTitle(
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
+  let edgeSwipe: { pointerId: number; x: number; y: number } | undefined;
+
+  const startEdgeSwipe = (event: PointerEvent) => {
+    if (event.pointerType !== "touch" || event.clientX > 24 || navOpen() || streamMode()) return;
+    edgeSwipe = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    try {
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic browser tests do not create an active native pointer.
+    }
+  };
+
+  const moveEdgeSwipe = (event: PointerEvent) => {
+    if (!edgeSwipe || event.pointerId !== edgeSwipe.pointerId) return;
+    const dx = event.clientX - edgeSwipe.x;
+    const dy = Math.abs(event.clientY - edgeSwipe.y);
+    if (dx < 0 || dy > dx) {
+      edgeSwipe = undefined;
+      return;
+    }
+    if (dx >= 56) {
+      edgeSwipe = undefined;
+      setNavOpen(true);
+    }
+  };
+
+  const endEdgeSwipe = (event: PointerEvent) => {
+    if (edgeSwipe?.pointerId === event.pointerId) edgeSwipe = undefined;
+  };
 
   onMount(() => {
     // Await the initial route resolution (the standalone post fetch, or the
@@ -409,6 +438,14 @@ export default function App() {
           </div>
           <Show when={!streamMode()}>
             <div id="scrim" onClick={() => setNavOpen(false)}></div>
+            <div
+              id="edgeSwipe"
+              aria-hidden="true"
+              onPointerDown={startEdgeSwipe}
+              onPointerMove={moveEdgeSwipe}
+              onPointerUp={endEdgeSwipe}
+              onPointerCancel={endEdgeSwipe}
+            ></div>
           </Show>
           <div id="toast" role="status" aria-live="polite" classList={{ show: toastShow() }}>
             {toastText()}

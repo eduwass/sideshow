@@ -2014,7 +2014,30 @@ iframe {
 #scrim {
   display: none;
 }
+#edgeSwipe {
+  display: none;
+}
 @media (max-width: 700px) {
+  html,
+  body {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  button,
+  input,
+  textarea,
+  select,
+  [role="button"] {
+    touch-action: manipulation;
+  }
   #app {
     flex-direction: column;
   }
@@ -2086,16 +2109,30 @@ iframe {
     display: contents;
   }
   .sidebar-head > .brand {
-    min-height: 48px;
-    padding-top: 12px;
-    padding-right: 16px;
-    padding-bottom: 10px;
+    flex: none;
+    height: 48px;
+    min-height: 0;
+    padding: 0 16px;
   }
   .sidebar-toggle {
     display: none;
   }
+  #edgeSwipe {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 25;
+    display: block;
+    width: 20px;
+    touch-action: pan-y;
+  }
+  body.nav-open #edgeSwipe,
+  :host(.nav-open) #edgeSwipe {
+    pointer-events: none;
+  }
   #sessionList {
     padding: 6px 8px 10px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
   }
   .sess {
     min-height: 52px;
@@ -2146,6 +2183,8 @@ iframe {
   }
   main {
     min-height: 0;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
   }
   .session-head {
     display: grid;

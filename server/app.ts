@@ -1047,6 +1047,39 @@ export function createApp({
         : (version ?? "dev");
     return injectHead(html, postPreviewHead(opts.post, c.req.raw, active.id, generation));
   };
+  app.get("/manifest.webmanifest", (c) =>
+    c.body(
+      JSON.stringify({
+        name: "Sideshow",
+        short_name: "Sideshow",
+        start_url: "/",
+        scope: "/",
+        display: "standalone",
+        background_color: "#f8f9fb",
+        theme_color: "#17181c",
+        icons: [{ src: "/app-icon.svg", sizes: "any", type: "image/svg+xml" }],
+      }),
+      200,
+      {
+        "Content-Type": "application/manifest+json",
+        "Cache-Control": "public, max-age=86400",
+      },
+    ),
+  );
+  app.get("/app-icon.svg", (c) =>
+    c.body(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#17181c"/><circle cx="256" cy="256" r="72" fill="#4ade80"/></svg>',
+      200,
+      { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
+    ),
+  );
+  app.get("/sw.js", (c) =>
+    c.body(
+      'self.addEventListener("install",()=>self.skipWaiting());self.addEventListener("activate",event=>event.waitUntil(self.clients.claim()));',
+      200,
+      { "Content-Type": "text/javascript", "Cache-Control": "no-cache" },
+    ),
+  );
   app.get("/", async (c) => c.html(await configuredViewerHtml(c)));
   app.get("/connect", async (c) =>
     c.html(await configuredViewerHtml(c, { title: "Connect an agent" })),

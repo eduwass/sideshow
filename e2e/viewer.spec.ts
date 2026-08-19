@@ -766,6 +766,24 @@ test("at phone width the sidebar collapses into a drawer and actions stay visibl
   await page.setViewportSize({ width: 393, height: 852 });
   await page.goto(`${server.url}/session/${longSession.id}`);
 
+  const mobileStyles = await page.evaluate(() => {
+    const controls = ["input", "textarea", "select"].map((tag) => {
+      const control = document.createElement(tag);
+      document.body.append(control);
+      const fontSize = getComputedStyle(control).fontSize;
+      control.remove();
+      return fontSize;
+    });
+    return {
+      controls,
+      bodyOverscroll: getComputedStyle(document.body).overscrollBehavior,
+      mainOverscroll: getComputedStyle(document.querySelector("main")!).overscrollBehavior,
+    };
+  });
+  expect(mobileStyles.controls).toEqual(["16px", "16px", "16px"]);
+  expect(mobileStyles.bodyOverscroll).toBe("none");
+  expect(mobileStyles.mainOverscroll).toBe("contain");
+
   // the sidebar is off-canvas and the stream gets the full width
   const card = page.locator(".card:not(#whatsNew)");
   await expect(card).toBeVisible();
@@ -776,7 +794,28 @@ test("at phone width the sidebar collapses into a drawer and actions stay visibl
   // hover-only card actions are always visible at narrow widths
   await expect(card.locator(".act.share")).toHaveCSS("opacity", "1");
 
-  // the menu button opens the drawer; picking a session closes it again
+  // A deliberate swipe from the left edge opens the drawer without stealing
+  // ordinary vertical scrolling. The mobile Home row must not inherit the
+  // desktop flex growth that used to turn it into a huge blank header.
+  const edge = page.locator("#edgeSwipe");
+  await edge.dispatchEvent("pointerdown", {
+    pointerId: 1,
+    pointerType: "touch",
+    clientX: 4,
+    clientY: 300,
+  });
+  await edge.dispatchEvent("pointermove", {
+    pointerId: 1,
+    pointerType: "touch",
+    clientX: 72,
+    clientY: 304,
+  });
+  await expect(page.locator("aside")).toBeInViewport();
+  expect((await page.locator("aside .brand").boundingBox())!.height).toBe(48);
+  await page.locator("#scrim").click();
+  await expect(page.locator("aside")).not.toBeInViewport();
+
+  // the menu button still opens the drawer; picking a session closes it again
   await page.locator("#menuBtn").click();
   await expect(page.locator("aside")).toBeInViewport();
   await expectNoHorizontalOverflow(page, "main");

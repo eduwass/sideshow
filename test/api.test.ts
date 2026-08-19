@@ -56,6 +56,32 @@ const authedJson = (body: unknown, token = "secret") => ({
   headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
 });
 
+test("the private viewer exposes standalone PWA metadata", async () => {
+  const app = makeApp();
+  const manifest = await app.request("/manifest.webmanifest");
+  assert.equal(manifest.status, 200);
+  assert.equal(manifest.headers.get("content-type"), "application/manifest+json");
+  assert.deepEqual(await manifest.json(), {
+    name: "Sideshow",
+    short_name: "Sideshow",
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    background_color: "#f8f9fb",
+    theme_color: "#17181c",
+    icons: [{ src: "/app-icon.svg", sizes: "any", type: "image/svg+xml" }],
+  });
+
+  const icon = await app.request("/app-icon.svg");
+  assert.equal(icon.status, 200);
+  assert.match(icon.headers.get("content-type") ?? "", /^image\/svg\+xml/);
+
+  const worker = await app.request("/sw.js");
+  assert.equal(worker.status, 200);
+  assert.match(worker.headers.get("content-type") ?? "", /^text\/javascript/);
+  assert.match(await worker.text(), /skipWaiting/);
+});
+
 test("publish without session auto-creates one", async () => {
   const app = makeApp();
   const res = await app.request(
