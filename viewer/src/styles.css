@@ -2020,6 +2020,7 @@ iframe {
 @media (max-width: 700px) {
   html,
   body {
+    height: 100dvh;
     overflow: hidden;
     overscroll-behavior: none;
   }
@@ -2040,6 +2041,7 @@ iframe {
   }
   #app {
     flex-direction: column;
+    height: 100dvh;
   }
   .topbar {
     display: flex;
@@ -2095,12 +2097,12 @@ iframe {
   aside {
     position: fixed;
     top: 0;
-    bottom: 0;
+    bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
     left: 0;
     z-index: 30;
     width: min(280px, 84vw);
     padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: 0;
     transform: translateX(-105%);
     transition: transform 220ms var(--ease-drawer);
     will-change: transform;
@@ -2124,6 +2126,7 @@ iframe {
     display: block;
     width: 20px;
     touch-action: pan-y;
+    bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
   }
   body.nav-open #edgeSwipe,
   :host(.nav-open) #edgeSwipe {
@@ -2170,6 +2173,7 @@ iframe {
     display: block;
     position: fixed;
     inset: 0;
+    bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
     z-index: 25;
     background: rgba(0, 0, 0, 0.35);
     opacity: 0;
