@@ -1,18 +1,30 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getCookie, setCookie } from "hono/cookie";
-import { timingSafeEqual, verifyPassword } from "./passwords.ts";
+import { decodeBase64 } from "./base64.ts";
+import { hashPassword, timingSafeEqual, verifyPassword } from "./passwords.ts";
+import { validateSurfaces } from "./postSurfaces.ts";
+import { renderPasswordPage, renderPublicationPage } from "./publicationPage.ts";
 import {
   type ExternalAnchor,
+  type IdentityHeader,
+  isValidCustomSlug,
   shareLinkState,
   type ShareLink,
   type Snapshot,
+  type SnapshotItem,
   type TextAnchorMeta,
 } from "./publicationTypes.ts";
 import { RateLimiter } from "./rateLimit.ts";
 import { renderHtmlPage, renderMermaidPage, renderSandboxedPart } from "./surfacePage.ts";
 import { DEFAULT_THEME_ID, themeById } from "./themes.ts";
-import { isSandboxedSurfaceKind, type Store, type Surface } from "./types.ts";
+import {
+  type AssetKind,
+  MAX_ASSET_BYTES,
+  isSandboxedSurfaceKind,
+  type Store,
+  type Surface,
+} from "./types.ts";
 import { computeVisitorHash, deviceClass } from "./visitorHash.ts";
 
 // The public publication service (docs/adr/0001).
@@ -93,6 +105,21 @@ export function publicSurfaceView(surface: Surface): PublicSurfaceView | null {
 
 const encoder = new TextEncoder();
 
+// A per-response CSP nonce.
+const newNonce = (): string =>
+  [...crypto.getRandomValues(new Uint8Array(16))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+// One flat page for every reason a link does not resolve, so a visitor cannot
+// tell an unknown slug from a revoked or expired one.
+const NOT_FOUND_PAGE =
+  `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+  `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+  `<meta name="robots" content="noindex, nofollow"><title>Not available</title></head>` +
+  `<body style="font:15px/1.6 ui-sans-serif,system-ui,sans-serif;margin:18vh auto;max-width:32rem;padding:0 20px;text-align:center">` +
+  `<p>This link is not available.</p></body></html>`;
+
 // Proof that this browser cleared a link's password. Bound to both the link and
 // its current password hash, so changing or clearing the password invalidates
 // every outstanding unlock without any stored session state.
@@ -126,6 +153,53 @@ const clientCountry = (c: Context): string | null => {
   const country = c.req.header("cf-ipcountry");
   return country && /^[A-Z]{2}$/.test(country) ? country : null;
 };
+
+export const PUBLICATION_ASSET_AGENT = "publications";
+
+// The owner's view of a share link. The password hash never leaves the service
+// — the owner sees only whether one is set.
+export function ownerLinkView(link: ShareLink) {
+  const { passwordHash, ...rest } = link;
+  return { ...rest, hasPassword: !!passwordHash };
+}
+
+// `false` means "present but invalid" so a caller can 400 rather than silently
+// dropping a value the user asked for.
+export function normalizeIdentity(raw: unknown): IdentityHeader | null | false {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object") return false;
+  const value = raw as Record<string, unknown>;
+  const name = typeof value.name === "string" ? value.name.trim().slice(0, 120) : "";
+  if (!name) return false;
+  const identity: IdentityHeader = { name };
+  if (typeof value.avatarAssetId === "string" && value.avatarAssetId) {
+    identity.avatarAssetId = value.avatarAssetId.slice(0, 128);
+  }
+  if (typeof value.linkUrl === "string" && value.linkUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(value.linkUrl);
+    } catch {
+      return false;
+    }
+    // Only ever render a link a browser can safely follow — no javascript:,
+    // no data:.
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+    identity.linkUrl = parsed.toString();
+  }
+  if (typeof value.linkLabel === "string" && value.linkLabel) {
+    identity.linkLabel = value.linkLabel.trim().slice(0, 80);
+  }
+  return identity;
+}
+
+export function normalizeExpiry(raw: unknown): string | null | false {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw !== "string") return false;
+  const at = Date.parse(raw);
+  if (!Number.isFinite(at)) return false;
+  return new Date(at).toISOString();
+}
 
 const trimmed = (value: unknown, max: number): string =>
   typeof value === "string" ? value.slice(0, max).trim() : "";
@@ -175,7 +249,213 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
 
   app.get("/api/owner/health", (c) => c.json({ ok: true, role: "public" }));
 
-  app.get("/api/owner/publications", async (c) => c.json(await publications.listPublications()));
+  // Publications live only here (docs/adr/0001), so the private control plane
+  // finds an existing one by the post it came from rather than keeping its own
+  // copy of the mapping — which would drift, and would survive a private data
+  // loss less well than asking the source of truth.
+  app.get("/api/owner/publications", async (c) => {
+    const originPostId = c.req.query("originPostId");
+    const originSessionId = c.req.query("originSessionId");
+    let list = await publications.listPublications();
+    if (originPostId) list = list.filter((p) => p.originPostId === originPostId);
+    if (originSessionId) list = list.filter((p) => p.originSessionId === originSessionId);
+    return c.json(list);
+  });
+
+  app.post("/api/owner/publications", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const kind = body.kind === "collection" ? "collection" : "post";
+    const identity = normalizeIdentity(body.identity);
+    if (identity === false) return c.json({ error: "invalid identity header" }, 400);
+    const publication = await publications.createPublication({
+      kind,
+      title: typeof body.title === "string" ? body.title : undefined,
+      originSessionId: typeof body.originSessionId === "string" ? body.originSessionId : null,
+      originPostId: typeof body.originPostId === "string" ? body.originPostId : null,
+      identity,
+    });
+    return c.json(publication, 201);
+  });
+
+  app.get("/api/owner/publications/:id", async (c) => {
+    const publication = await publications.getPublication(c.req.param("id"));
+    if (!publication) return c.json({ error: "not found" }, 404);
+    const snapshots = await publications.listSnapshots(publication.id);
+    return c.json({
+      publication,
+      // Metadata only: a snapshot's frozen surfaces are fetched one at a time.
+      snapshots: snapshots.map(({ items: _items, ...meta }) => ({
+        ...meta,
+        itemCount: _items.length,
+      })),
+      // Password hashes never leave the service, even to the owner.
+      links: (await publications.listShareLinks(publication.id)).map(ownerLinkView),
+    });
+  });
+
+  app.patch("/api/owner/publications/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const patch: { title?: string; identity?: IdentityHeader | null } = {};
+    if (typeof body.title === "string") patch.title = body.title;
+    if ("identity" in body) {
+      const identity = normalizeIdentity(body.identity);
+      if (identity === false) return c.json({ error: "invalid identity header" }, 400);
+      patch.identity = identity;
+    }
+    const updated = await publications.updatePublication(c.req.param("id"), patch);
+    if (!updated) return c.json({ error: "not found" }, 404);
+    return c.json(updated);
+  });
+
+  app.delete("/api/owner/publications/:id", async (c) => {
+    const removed = await publications.removePublication(c.req.param("id"));
+    if (!removed) return c.json({ error: "not found" }, 404);
+    return c.body(null, 204);
+  });
+
+  app.get("/api/owner/publications/:id/snapshots", async (c) => {
+    if (!(await publications.getPublication(c.req.param("id")))) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return c.json(await publications.listSnapshots(c.req.param("id")));
+  });
+
+  // Creating a snapshot is the atomic step that makes a new revision live: it
+  // writes the frozen items, pins their assets and flips currentSnapshotId in
+  // one call. Assets are uploaded BEFORE this, so a snapshot is never briefly
+  // reachable with missing bytes; a failure here leaves the previous revision
+  // serving untouched.
+  app.post("/api/owner/publications/:id/snapshots", async (c) => {
+    const publicationId = c.req.param("id");
+    if (!(await publications.getPublication(publicationId))) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawItems = Array.isArray(body.items) ? body.items : null;
+    if (!rawItems || rawItems.length === 0) return c.json({ error: "items required" }, 400);
+    const items: SnapshotItem[] = [];
+    for (const raw of rawItems) {
+      if (!raw || typeof raw !== "object") return c.json({ error: "invalid item" }, 400);
+      const item = raw as Record<string, unknown>;
+      // The same strict validator the private workspace uses, so nothing can be
+      // stored here that could not have been published there.
+      const validated = await validateSurfaces(item.surfaces);
+      if (!validated.ok) return c.json({ error: validated.error }, 400);
+      items.push({
+        postId: typeof item.postId === "string" ? item.postId : "",
+        title: typeof item.title === "string" ? item.title : "Untitled",
+        version: Number.isInteger(item.version) ? (item.version as number) : 1,
+        surfaces: validated.surfaces,
+      });
+    }
+    const assetIds = Array.isArray(body.assetIds)
+      ? body.assetIds.filter((id): id is string => typeof id === "string")
+      : undefined;
+    const snapshot = await publications.createSnapshot({
+      publicationId,
+      title: typeof body.title === "string" ? body.title : undefined,
+      items,
+      assetIds,
+    });
+    if (!snapshot) return c.json({ error: "not found" }, 404);
+    return c.json(snapshot, 201);
+  });
+
+  app.get("/api/owner/snapshots/:id", async (c) => {
+    const snapshot = await publications.getSnapshot(c.req.param("id"));
+    if (!snapshot) return c.json({ error: "not found" }, 404);
+    return c.json(snapshot);
+  });
+
+  app.get("/api/owner/publications/:id/links", async (c) => {
+    if (!(await publications.getPublication(c.req.param("id")))) {
+      return c.json({ error: "not found" }, 404);
+    }
+    // Password hashes never leave the service, even to the owner.
+    return c.json((await publications.listShareLinks(c.req.param("id"))).map(ownerLinkView));
+  });
+
+  app.post("/api/owner/publications/:id/links", async (c) => {
+    const publicationId = c.req.param("id");
+    if (!(await publications.getPublication(publicationId))) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    let slug: string | undefined;
+    if (body.slug !== undefined) {
+      if (!isValidCustomSlug(body.slug)) return c.json({ error: "invalid slug" }, 400);
+      slug = body.slug;
+    }
+    const expiresAt = normalizeExpiry(body.expiresAt);
+    if (expiresAt === false) return c.json({ error: "invalid expiry" }, 400);
+    const passwordHash =
+      typeof body.password === "string" && body.password ? await hashPassword(body.password) : null;
+    const link = await publications.createShareLink({
+      publicationId,
+      ...(slug !== undefined && { slug, custom: true }),
+      recipientLabel: typeof body.recipientLabel === "string" ? body.recipientLabel : null,
+      passwordHash,
+      expiresAt,
+      trackOpens: body.trackOpens !== false,
+    });
+    if (!link) return c.json({ error: "that link address is already taken" }, 409);
+    return c.json(ownerLinkView(link), 201);
+  });
+
+  // Asset bytes for a publication. Exempt from the small public body cap above
+  // and bounded by the asset cap instead.
+  app.post(
+    "/api/owner/assets",
+    bodyLimit({
+      maxSize: MAX_ASSET_BYTES,
+      onError: (c) => c.json({ error: `asset exceeds ${MAX_ASSET_BYTES} bytes` }, 413),
+    }),
+    async (c) => {
+      const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof body.data !== "string") return c.json({ error: "data required" }, 400);
+      let data: Uint8Array;
+      try {
+        data = decodeBase64(body.data);
+      } catch {
+        return c.json({ error: "invalid base64" }, 400);
+      }
+      if (data.byteLength > MAX_ASSET_BYTES) {
+        return c.json({ error: `asset exceeds ${MAX_ASSET_BYTES} bytes` }, 413);
+      }
+      const kind: AssetKind = body.kind === "image" || body.kind === "file" ? body.kind : "image";
+      const asset = await store.putAsset({
+        sessionId: await assetSessionId(),
+        kind,
+        contentType:
+          typeof body.contentType === "string" ? body.contentType : "application/octet-stream",
+        filename: typeof body.filename === "string" ? body.filename : undefined,
+        data,
+      });
+      if (!asset) return c.json({ error: "could not store that asset" }, 500);
+      return c.json({ id: asset.id, byteLength: asset.byteLength }, 201);
+    },
+  );
+
+  // Assets belong to a publication, not to a session — but the store keys them
+  // by session, so the public workspace keeps exactly one reserved session to
+  // own them. Snapshot pins, not this session, are what protect them from
+  // eviction.
+  let reservedSessionId: string | null = null;
+  const assetSessionId = async (): Promise<string> => {
+    if (reservedSessionId) return reservedSessionId;
+    const existing = (await store.listSessions()).find(
+      (session) => session.agent === PUBLICATION_ASSET_AGENT,
+    );
+    reservedSessionId =
+      existing?.id ??
+      (
+        await store.createSession({
+          agent: PUBLICATION_ASSET_AGENT,
+          title: "Published assets",
+        })
+      ).id;
+    return reservedSessionId;
+  };
 
   // --- share-link resolution ---
 
@@ -214,6 +494,38 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
   const isResponse = (value: Resolved | Response): value is Response => value instanceof Response;
 
   // --- public reads ---
+
+  // The publication itself. A locked link renders the password gate rather than
+  // an error, so a recipient sees something usable.
+  app.get("/v/:slug", async (c) => {
+    const nonce = newNonce();
+    const resolved = await resolve(c);
+    // Nothing agent-authored becomes HTML here (see publicationPage.ts), so the
+    // page can run under a strict, nonce-based policy. Sandboxed surfaces are
+    // same-origin iframes carrying their own `sandbox` CSP header.
+    c.header(
+      "Content-Security-Policy",
+      `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; ` +
+        `img-src 'self' data:; frame-src 'self'; connect-src 'self'; base-uri 'none'; ` +
+        `form-action 'none'; frame-ancestors 'none'`,
+    );
+    c.header("Cache-Control", "private, no-store");
+    if (isResponse(resolved)) {
+      if (resolved.status === 401) return c.html(renderPasswordPage(c.req.param("slug"), nonce));
+      return c.html(NOT_FOUND_PAGE, 404);
+    }
+    const publication = await publications.getPublication(resolved.publicationId);
+    return c.html(
+      renderPublicationPage({
+        title: resolved.snapshot.title,
+        identity: publication?.identity ?? null,
+        slug: resolved.link.slug,
+        snapshot: resolved.snapshot,
+        trackOpens: resolved.link.trackOpens,
+        nonce,
+      }),
+    );
+  });
 
   app.get("/api/v/:slug", async (c) => {
     const resolved = await resolve(c);

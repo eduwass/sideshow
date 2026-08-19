@@ -66,8 +66,14 @@ export class DestinationClient {
     const res = await this.fetchImpl(`${this.config.origin}${path}`, { ...init, headers });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      // Never echo the token or the raw upstream body back to a caller.
-      throw new DestinationError(res.status, body.error || `destination returned ${res.status}`);
+      // Never echo the token or the raw upstream body back to a caller. The
+      // upstream message is ours and is passed through — unless it contains the
+      // credential, which a proxy or WAF echoing our request headers can do.
+      const message =
+        body.error && !body.error.includes(this.config.token)
+          ? body.error
+          : `destination returned ${res.status}`;
+      throw new DestinationError(res.status, message);
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;

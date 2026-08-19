@@ -12,3 +12,15 @@ export function decodeBase64(b64: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
 }
+
+// bytes -> base64, runtime-agnostic. Chunked because
+// `String.fromCharCode(...bytes)` blows the argument limit (and the stack) on
+// anything bigger than ~100 kB, and assets run to megabytes.
+export function encodeBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}

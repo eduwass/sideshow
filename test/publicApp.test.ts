@@ -4,18 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { hashPassword } from "../server/passwords.ts";
+import { encodeBase64 } from "../server/base64.ts";
 import {
   createPublicApp,
   MAX_FEEDBACK_QUOTE_LENGTH,
   MAX_PUBLIC_BODY_BYTES,
   normalizeAnchor,
+  PUBLICATION_ASSET_AGENT,
   publicSurfaceView,
 } from "../server/publicApp.ts";
 import type { ShareLink, Snapshot, SnapshotItem } from "../server/publicationTypes.ts";
 import { createSqliteStorage } from "../server/sqliteStorage.ts";
 import { SqlStore } from "../server/sqlStore.ts";
 import { JsonFileStore } from "../server/storage.ts";
-import type { Surface } from "../server/types.ts";
+import { hashAssetId, type Surface } from "../server/types.ts";
 
 const OWNER_TOKEN = "owner-token-value";
 const VISITOR_SECRET = "visitor-secret";
@@ -834,4 +836,469 @@ test("normalizeAnchor drops meta that is not an object or has non-integer offset
   assert.deepEqual(kept.startMeta, { parentTagName: "P", parentIndex: 0, textOffset: 0 });
   assert.equal(kept.prefix, undefined);
   assert.equal(kept.suffix, undefined);
+});
+
+// --- 13. owner publications CRUD ----------------------------------------
+
+const AUTH = { authorization: `Bearer ${OWNER_TOKEN}` };
+
+const ownerGet = (app: TestApp, path: string) => get(app, path, AUTH);
+
+const ownerSend = (app: TestApp, method: string, path: string, body?: unknown) =>
+  app.request(`${ORIGIN}${path}`, {
+    method,
+    headers: { "content-type": "application/json", ...AUTH },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+  });
+
+const ownerPost = (app: TestApp, path: string, body?: unknown) =>
+  ownerSend(app, "POST", path, body);
+
+// A minimal valid frozen item, so link/snapshot tests do not depend on the
+// bigger seeded surface set.
+const jsonItem = (title = "Frozen post") => ({
+  postId: "post-9",
+  title,
+  version: 1,
+  surfaces: [{ kind: "json", data: { ok: true } }],
+});
+
+test("owner publications can be created, listed, filtered, read, patched and deleted", async () => {
+  const { app, publication: seeded } = await seed();
+
+  // kind defaults to "post" when unspecified.
+  const created = await ownerPost(app, "/api/owner/publications", {
+    title: "New publication",
+    originPostId: "post-42",
+    originSessionId: "session-7",
+  });
+  assert.equal(created.status, 201);
+  const publication = (await created.json()) as any;
+  assert.equal(publication.kind, "post");
+  assert.equal(publication.title, "New publication");
+  assert.equal(publication.currentSnapshotId, null);
+  assert.equal(publication.identity, null);
+
+  const collection = (await (
+    await ownerPost(app, "/api/owner/publications", { kind: "collection" })
+  ).json()) as any;
+  assert.equal(collection.kind, "collection");
+
+  const all = (await (await ownerGet(app, "/api/owner/publications")).json()) as any[];
+  assert.deepEqual(
+    new Set(all.map((p) => p.id)),
+    new Set([seeded.id, publication.id, collection.id]),
+  );
+
+  const byPost = (await (
+    await ownerGet(app, "/api/owner/publications?originPostId=post-42")
+  ).json()) as any[];
+  assert.deepEqual(
+    byPost.map((p) => p.id),
+    [publication.id],
+  );
+  const bySession = (await (
+    await ownerGet(app, "/api/owner/publications?originSessionId=session-7")
+  ).json()) as any[];
+  assert.deepEqual(
+    bySession.map((p) => p.id),
+    [publication.id],
+  );
+  const byBoth = (await (
+    await ownerGet(app, "/api/owner/publications?originPostId=post-42&originSessionId=nope")
+  ).json()) as any[];
+  assert.deepEqual(byBoth, []);
+
+  // Detail carries snapshot metadata only — never the frozen surfaces.
+  await ownerPost(app, `/api/owner/publications/${publication.id}/snapshots`, {
+    items: [jsonItem()],
+  });
+  const detail = (await (
+    await ownerGet(app, `/api/owner/publications/${publication.id}`)
+  ).json()) as any;
+  assert.equal(detail.publication.id, publication.id);
+  assert.equal(detail.snapshots.length, 1);
+  assert.equal(detail.snapshots[0].itemCount, 1);
+  assert.equal("items" in detail.snapshots[0], false, "detail must not carry frozen surfaces");
+  assert.deepEqual(detail.links, []);
+
+  const patched = (await (
+    await ownerSend(app, "PATCH", `/api/owner/publications/${publication.id}`, {
+      title: "Renamed",
+    })
+  ).json()) as any;
+  assert.equal(patched.title, "Renamed");
+
+  const withIdentity = (await (
+    await ownerSend(app, "PATCH", `/api/owner/publications/${publication.id}`, {
+      identity: {
+        name: "  Edu  ",
+        avatarAssetId: "avatar-1",
+        linkUrl: "https://example.com/edu",
+        linkLabel: "  site  ",
+      },
+    })
+  ).json()) as any;
+  assert.deepEqual(withIdentity.identity, {
+    name: "Edu",
+    avatarAssetId: "avatar-1",
+    linkUrl: "https://example.com/edu",
+    linkLabel: "site",
+  });
+
+  const cleared = (await (
+    await ownerSend(app, "PATCH", `/api/owner/publications/${publication.id}`, { identity: null })
+  ).json()) as any;
+  assert.equal(cleared.identity, null);
+
+  const removed = await ownerSend(app, "DELETE", `/api/owner/publications/${publication.id}`);
+  assert.equal(removed.status, 204);
+  assert.equal((await ownerGet(app, `/api/owner/publications/${publication.id}`)).status, 404);
+  assert.equal(
+    (await ownerSend(app, "DELETE", `/api/owner/publications/${publication.id}`)).status,
+    404,
+  );
+});
+
+test("an invalid identity header is refused rather than silently dropped", async () => {
+  const { app, publication } = await seed();
+  for (const identity of [
+    {},
+    "Edu",
+    7,
+    { name: "   " },
+    { name: "Edu", linkUrl: "javascript:alert(1)" },
+    { name: "Edu", linkUrl: "not a url" },
+  ]) {
+    const created = await ownerPost(app, "/api/owner/publications", { identity });
+    assert.equal(created.status, 400, JSON.stringify(identity));
+    assert.deepEqual(await created.json(), { error: "invalid identity header" });
+
+    const patched = await ownerSend(app, "PATCH", `/api/owner/publications/${publication.id}`, {
+      identity,
+    });
+    assert.equal(patched.status, 400, JSON.stringify(identity));
+  }
+});
+
+test("every owner route 404s for an unknown publication id", async () => {
+  const { app } = await seed();
+  const missing: [string, string, unknown?][] = [
+    ["GET", "/api/owner/publications/nope"],
+    ["PATCH", "/api/owner/publications/nope", { title: "x" }],
+    ["DELETE", "/api/owner/publications/nope"],
+    ["GET", "/api/owner/publications/nope/snapshots"],
+    ["POST", "/api/owner/publications/nope/snapshots", { items: [jsonItem()] }],
+    ["GET", "/api/owner/publications/nope/links"],
+    ["POST", "/api/owner/publications/nope/links", {}],
+    ["GET", "/api/owner/snapshots/nope"],
+  ];
+  for (const [method, path, body] of missing) {
+    const res = await ownerSend(app, method, path, body);
+    assert.equal(res.status, 404, `${method} ${path}`);
+    assert.deepEqual(await res.json(), { error: "not found" }, `${method} ${path}`);
+  }
+});
+
+// --- 14. owner snapshots ------------------------------------------------
+
+test("a snapshot is refused unless every item validates", async () => {
+  const { app, publication } = await seed();
+  const base = `/api/owner/publications/${publication.id}/snapshots`;
+
+  for (const [body, error] of [
+    [{}, "items required"],
+    [{ items: [] }, "items required"],
+    [{ items: "nope" }, "items required"],
+  ] as [unknown, string][]) {
+    const res = await ownerPost(app, base, body);
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.deepEqual(await res.json(), { error });
+  }
+
+  for (const item of [null, "an item", 7]) {
+    const res = await ownerPost(app, base, { items: [item] });
+    assert.equal(res.status, 400, JSON.stringify(item));
+    assert.deepEqual(await res.json(), { error: "invalid item" });
+  }
+
+  // The same strict validator the private workspace uses.
+  const bad = await ownerPost(app, base, {
+    items: [{ ...jsonItem(), surfaces: [{ kind: "html" }] }],
+  });
+  assert.equal(bad.status, 400);
+  assert.ok(((await bad.json()) as any).error, "the validator's own message is passed through");
+});
+
+test("a second snapshot mints revision 2 and leaves revision 1 readable", async () => {
+  const { app, publications, publication } = await seed();
+  const base = `/api/owner/publications/${publication.id}/snapshots`;
+
+  // The seeded publication already carries revision 1.
+  const first = await publications.listSnapshots(publication.id);
+  assert.equal(first.length, 1);
+  const original = first[0];
+
+  const created = await ownerPost(app, base, {
+    title: "Revision two",
+    items: [jsonItem("Second cut")],
+  });
+  assert.equal(created.status, 201);
+  const second = (await created.json()) as any;
+  assert.equal(second.revision, 2);
+  assert.equal(second.title, "Revision two");
+  assert.equal(second.items[0].title, "Second cut");
+
+  const after = await publications.getPublication(publication.id);
+  assert.equal(after?.currentSnapshotId, second.id, "the new revision is the live one");
+
+  // The frozen original is untouched and still fetchable by id.
+  const kept = await ownerGet(app, `/api/owner/snapshots/${original.id}`);
+  assert.equal(kept.status, 200);
+  const keptBody = (await kept.json()) as any;
+  assert.equal(keptBody.revision, 1);
+  assert.equal(keptBody.items[0].title, "Frozen post");
+  assert.equal(keptBody.items[0].surfaces.length, 8);
+
+  const listed = (await (await ownerGet(app, base)).json()) as any[];
+  assert.deepEqual(new Set(listed.map((s) => s.revision)), new Set([1, 2]));
+});
+
+test("snapshot item fields fall back rather than trusting the caller", async () => {
+  const { app, publication } = await seed();
+  const created = await ownerPost(app, `/api/owner/publications/${publication.id}/snapshots`, {
+    items: [{ surfaces: [{ kind: "json", data: 1 }], version: 2.5, postId: 7, title: 7 }],
+  });
+  assert.equal(created.status, 201);
+  const snapshot = (await created.json()) as any;
+  assert.equal(snapshot.items[0].postId, "");
+  assert.equal(snapshot.items[0].title, "Untitled");
+  assert.equal(snapshot.items[0].version, 1);
+});
+
+// --- 15. owner share links ----------------------------------------------
+
+test("a share link defaults to a generated slug and never exposes a password hash", async () => {
+  const { app, publication } = await seed();
+  const base = `/api/owner/publications/${publication.id}/links`;
+
+  const created = await ownerPost(app, base, {});
+  assert.equal(created.status, 201);
+  const generated = (await created.json()) as any;
+  assert.equal(generated.custom, false);
+  assert.ok(generated.slug.length >= 20, "a generated slug is an unguessable capability token");
+  assert.equal(generated.hasPassword, false);
+  assert.equal(generated.expiresAt, null);
+  assert.equal(generated.trackOpens, true);
+  assert.equal("passwordHash" in generated, false);
+
+  const custom = (await (await ownerPost(app, base, { slug: "my-report" })).json()) as any;
+  assert.equal(custom.slug, "my-report");
+  assert.equal(custom.custom, true);
+
+  const duplicate = await ownerPost(app, base, { slug: "my-report" });
+  assert.equal(duplicate.status, 409);
+  assert.deepEqual(await duplicate.json(), { error: "that link address is already taken" });
+
+  for (const slug of ["My-Report", "ab", "-abc", "abc-", "a/b", "with space", 7, null]) {
+    const res = await ownerPost(app, base, { slug });
+    assert.equal(res.status, 400, JSON.stringify(slug));
+    assert.deepEqual(await res.json(), { error: "invalid slug" });
+  }
+
+  for (const expiresAt of ["not-a-date", 7, {}]) {
+    const res = await ownerPost(app, base, { expiresAt });
+    assert.equal(res.status, 400, JSON.stringify(expiresAt));
+    assert.deepEqual(await res.json(), { error: "invalid expiry" });
+  }
+  const dated = (await (
+    await ownerPost(app, base, { expiresAt: "2099-06-01T12:00:00Z" })
+  ).json()) as any;
+  assert.equal(dated.expiresAt, "2099-06-01T12:00:00.000Z");
+  const undated = (await (await ownerPost(app, base, { expiresAt: "" })).json()) as any;
+  assert.equal(undated.expiresAt, null);
+
+  const locked = (await (
+    await ownerPost(app, base, {
+      password: PASSWORD,
+      recipientLabel: RECIPIENT,
+      trackOpens: false,
+    })
+  ).json()) as any;
+  assert.equal(locked.hasPassword, true);
+  assert.equal(locked.trackOpens, false);
+  assert.equal(locked.recipientLabel, RECIPIENT);
+  assert.equal("passwordHash" in locked, false);
+
+  // Nothing anywhere in the owner surface carries the stored hash.
+  const listed = await ownerGet(app, base);
+  const detail = await ownerGet(app, `/api/owner/publications/${publication.id}`);
+  for (const res of [listed, detail]) {
+    const wire = await res.text();
+    assert.equal(wire.includes("passwordHash"), false);
+    assert.equal(wire.includes("scrypt"), false, "no encoded hash material leaks either");
+  }
+  const listedLinks = JSON.parse(await (await ownerGet(app, base)).text()) as any[];
+  assert.equal(listedLinks.length, 6);
+  assert.equal(
+    listedLinks.every((l) => "hasPassword" in l),
+    true,
+  );
+});
+
+// --- 16. owner assets ---------------------------------------------------
+
+const UPLOAD_BYTES = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+
+test("owner asset uploads are content-addressed and unreachable until pinned", async () => {
+  const { app, publication } = await seed();
+
+  const noData = await ownerPost(app, "/api/owner/assets", { contentType: "image/png" });
+  assert.equal(noData.status, 400);
+  assert.deepEqual(await noData.json(), { error: "data required" });
+
+  const badBase64 = await ownerPost(app, "/api/owner/assets", { data: "not base64!!!" });
+  assert.equal(badBase64.status, 400);
+  assert.deepEqual(await badBase64.json(), { error: "invalid base64" });
+
+  const created = await ownerPost(app, "/api/owner/assets", {
+    data: encodeBase64(UPLOAD_BYTES),
+    contentType: "image/png",
+    filename: "shot.png",
+  });
+  assert.equal(created.status, 201);
+  const uploaded = (await created.json()) as any;
+  assert.equal(uploaded.id, await hashAssetId(UPLOAD_BYTES), "the id is the SHA-256 of the bytes");
+  assert.equal(uploaded.byteLength, UPLOAD_BYTES.byteLength);
+
+  // Identical bytes collapse onto the same id.
+  const again = (await (
+    await ownerPost(app, "/api/owner/assets", { data: encodeBase64(UPLOAD_BYTES), kind: "file" })
+  ).json()) as any;
+  assert.equal(again.id, uploaded.id);
+
+  // Stored, but not public until a snapshot pins it.
+  assert.equal((await get(app, `/a/${uploaded.id}`)).status, 404);
+  const pinned = await ownerPost(app, `/api/owner/publications/${publication.id}/snapshots`, {
+    items: [
+      {
+        ...jsonItem(),
+        surfaces: [{ kind: "image", assetId: uploaded.id, alt: "shot" }],
+      },
+    ],
+    assetIds: [uploaded.id, 7],
+  });
+  assert.equal(pinned.status, 201);
+  const served = await get(app, `/a/${uploaded.id}`);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("content-type"), "image/png");
+  assert.deepEqual(new Uint8Array(await served.arrayBuffer()), UPLOAD_BYTES);
+});
+
+test("however many assets are uploaded, one reserved session owns them all", async () => {
+  const { app, store } = await seed();
+  const upload = (bytes: Uint8Array) =>
+    ownerPost(app, "/api/owner/assets", { data: encodeBase64(bytes) });
+
+  for (const byte of [10, 11, 12]) assert.equal((await upload(new Uint8Array([byte]))).status, 201);
+
+  const reserved = (await store.listSessions()).filter(
+    (session) => session.agent === PUBLICATION_ASSET_AGENT,
+  );
+  assert.equal(reserved.length, 1);
+  assert.equal(reserved[0].title, "Published assets");
+
+  // A fresh runtime over the same store adopts the existing session instead of
+  // minting a second one.
+  const restarted = createPublicApp({
+    store,
+    ownerToken: OWNER_TOKEN,
+    visitorSecret: VISITOR_SECRET,
+  });
+  assert.equal(
+    (
+      await ownerPost(restarted, "/api/owner/assets", {
+        data: encodeBase64(new Uint8Array([13])),
+      })
+    ).status,
+    201,
+  );
+  assert.equal(
+    (await store.listSessions()).filter((s) => s.agent === PUBLICATION_ASSET_AGENT).length,
+    1,
+  );
+});
+
+// --- 17. the rendered publication page ----------------------------------
+
+test("GET /v/:slug serves the publication under a strict nonce CSP", async () => {
+  const { app, snapshot } = await seed();
+  const res = await get(app, "/v/demo-slug");
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+  assert.equal(res.headers.get("cache-control"), "private, no-store");
+
+  const csp = res.headers.get("content-security-policy") ?? "";
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /script-src 'nonce-[0-9a-f]{32}'/);
+  assert.match(csp, /style-src 'nonce-[0-9a-f]{32}'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.equal(csp.includes("unsafe-inline"), false);
+  assert.equal(csp.includes("unsafe-eval"), false);
+
+  const html = await res.text();
+  const nonce = /script-src 'nonce-([0-9a-f]+)'/.exec(csp)?.[1];
+  assert.ok(nonce);
+  assert.ok(html.includes(`<script nonce="${nonce}">`), "the page uses this response's nonce");
+  assert.match(html, /<h1>Quarterly report<\/h1>/);
+  assert.match(html, /<div class="who">Edu<\/div>/);
+  // The seeded html surface is referenced, never inlined.
+  assert.equal(html.includes(HTML_MARKUP), false);
+  assert.match(html, /src="\/api\/v\/demo-slug\/s\/0\/0"/);
+  assert.ok(html.includes(snapshot.id), "trackOpens wires the snapshot id into the page");
+
+  // Two responses never reuse a nonce.
+  const other = await get(app, "/v/demo-slug");
+  assert.notEqual(
+    other.headers.get("content-security-policy"),
+    res.headers.get("content-security-policy"),
+  );
+});
+
+test("a locked link renders the password gate, not an error", async () => {
+  const { app } = await seed({ withPassword: true });
+  const res = await get(app, "/v/demo-slug");
+  assert.equal(res.status, 200, "the gate is a usable page, not a 401");
+  assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+  const html = await res.text();
+  assert.match(html, /<title>Protected<\/title>/);
+  assert.match(html, /type="password"/);
+  assert.equal(html.includes("Quarterly report"), false, "nothing behind the gate leaks");
+});
+
+test("unknown, revoked and expired slugs render one byte-identical page", async () => {
+  const { app, publications, link, publication } = await seed();
+  const unknown = await get(app, "/v/never-existed");
+  assert.equal(unknown.status, 404);
+  const body = await unknown.text();
+
+  const expiredLink = await publications.createShareLink({
+    publicationId: publication.id,
+    slug: "expired-page",
+    expiresAt: "2000-01-01T00:00:00.000Z",
+  });
+  assert.ok(expiredLink);
+  const expired = await get(app, "/v/expired-page");
+  assert.equal(expired.status, 404);
+
+  await publications.updateShareLink(link.id, { revokedAt: new Date().toISOString() });
+  const revoked = await get(app, "/v/demo-slug");
+  assert.equal(revoked.status, 404);
+
+  const revokedBody = await revoked.text();
+  const expiredBody = await expired.text();
+  assert.equal(revokedBody, body);
+  assert.equal(expiredBody, body);
+  assert.equal(body.includes("Quarterly report"), false);
+  assert.match(body, /This link is not available\./);
 });

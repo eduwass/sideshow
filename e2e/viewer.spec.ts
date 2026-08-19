@@ -530,6 +530,7 @@ test("the share menu copies a link and a markdown flattening of the post", async
     "Copy as markdown",
     "Open in new tab",
     "Open as image",
+    "Publish to the web…",
   ]);
   // No Browser Rendering on a Node server, so the image row is inert but visible.
   await expect(menu.getByRole("menuitem", { name: "Open as image" })).toBeDisabled();

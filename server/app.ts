@@ -14,7 +14,7 @@ import {
   viewerPostView,
   type Feedback,
 } from "./apiViews.ts";
-import type { DestinationConfig } from "./destination.ts";
+import { DestinationClient, DestinationError, type DestinationConfig } from "./destination.ts";
 import { EventBus, type FeedEvent } from "./events.ts";
 import { kitSummaries } from "./kits.ts";
 import { registerMcp } from "./mcpHttp.ts";
@@ -48,6 +48,7 @@ import {
   type TraceStep,
 } from "./types.ts";
 import { validateSurfaces } from "./postSurfaces.ts";
+import { frozenItem, publicationStatusForPost, publishItems } from "./publishFlow.ts";
 import {
   findWelcomePost,
   WELCOME_POST_TITLE,
@@ -195,6 +196,8 @@ export interface AppOptions {
   // token inside it stays server-side: no route returns it and the viewer never
   // receives it.
   destination?: DestinationConfig;
+  // Test seam for the server-to-server calls to that destination.
+  destinationFetch?: typeof fetch;
 }
 
 export interface LatestRelease {
@@ -294,6 +297,7 @@ export function createApp({
   onEvent,
   maxHoldConnections = DEFAULT_MAX_HOLD_CONNECTIONS,
   destination,
+  destinationFetch,
 }: AppOptions) {
   const app = new Hono();
   // `?key=` bootstraps cookie auth, so never let a board URL disclose that
@@ -1027,6 +1031,60 @@ export function createApp({
   app.get("/api/publish/destination", (c) =>
     c.json({ configured: !!destination, origin: destination?.origin ?? null }),
   );
+
+  // Publishing runs entirely server-side: the browser asks for a post to be
+  // published and gets back a URL, but never sees the destination's write token.
+  const destinationClient = destination
+    ? new DestinationClient(destination, destinationFetch)
+    : null;
+
+  const destinationFailure = (c: Context, err: unknown) => {
+    // Surface the destination's own message (it is ours), never its credentials
+    // or a raw stack.
+    const message = err instanceof DestinationError ? err.message : "publishing failed";
+    return c.json({ error: message }, 502);
+  };
+
+  app.post("/api/publish/post", async (c) => {
+    if (!destinationClient) return c.json({ error: "no publication destination" }, 503);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const post = await store.getPost(typeof body.postId === "string" ? body.postId : "");
+    if (!post) return c.json({ error: "post not found" }, 404);
+    const version = typeof body.version === "number" ? body.version : undefined;
+    const item = frozenItem(post, version);
+    if (!item) return c.json({ error: "that version is not available" }, 404);
+    if (item.surfaces.length === 0) {
+      return c.json({ error: "this post has nothing publishable" }, 400);
+    }
+    try {
+      return c.json(
+        await publishItems({
+          store,
+          client: destinationClient,
+          title: item.title,
+          items: [item],
+          kind: "post",
+          originSessionId: post.sessionId,
+          originPostId: post.id,
+        }),
+        201,
+      );
+    } catch (err) {
+      return destinationFailure(c, err);
+    }
+  });
+
+  app.get("/api/publish/post/:id", async (c) => {
+    if (!destinationClient) return c.json({ published: false, configured: false });
+    try {
+      return c.json({
+        configured: true,
+        ...(await publicationStatusForPost(destinationClient, c.req.param("id"))),
+      });
+    } catch (err) {
+      return destinationFailure(c, err);
+    }
+  });
 
   // --- theme (one workspace-level setting) ---
 

@@ -151,3 +151,72 @@ export function relTime(iso: string): string {
   if (s < 86400) return Math.floor(s / 3600) + "h ago";
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+
+// --- publishing a post to the public destination ---
+//
+// Publishing runs entirely server-side (the browser never holds the
+// destination's write token), so the viewer only asks three things: whether a
+// destination exists at all, whether this post already has a publication, and
+// "publish it now".
+
+export type PublishDestination = { configured: boolean; origin: string | null };
+
+export type PublicationStatus = {
+  configured: boolean;
+  published: boolean;
+  publicationId?: string;
+  url?: string;
+  revision?: number;
+  updatedAt?: string;
+  links?: number;
+};
+
+export type PublishPostResult = {
+  publicationId: string;
+  snapshotId: string;
+  revision: number;
+  slug: string;
+  url: string;
+  // False on a first publish, true when an existing publication gained a revision.
+  updated: boolean;
+};
+
+export const publishDestinationPath = () => "/api/publish/destination";
+
+export function publicationStatusPath(id: string): string {
+  return `/api/publish/post/${encodeURIComponent(id)}`;
+}
+
+export const publishPostPath = () => "/api/publish/post";
+
+// Whether this workspace publishes anywhere is a deploy-level fact, so it is
+// fetched once per page and shared by every card's share menu — opening a menu
+// in a long feed must not be chatty. A failure is not cached, so a transient
+// error doesn't leave the menu permanently wrong.
+let destinationOnce: Promise<PublishDestination> | null = null;
+
+export function publishDestination(): Promise<PublishDestination> {
+  return (destinationOnce ??= api<PublishDestination>(publishDestinationPath()).catch((err) => {
+    destinationOnce = null;
+    throw err;
+  }));
+}
+
+export function publicationStatus(id: string): Promise<PublicationStatus> {
+  return api<PublicationStatus>(publicationStatusPath(id));
+}
+
+export function publishPost(postId: string, version?: number): Promise<PublishPostResult> {
+  return api<PublishPostResult>(publishPostPath(), {
+    method: "POST",
+    body: JSON.stringify(version === undefined ? { postId } : { postId, version }),
+  });
+}
+
+// api() throws the server's `error` string when there is one and the bare status
+// code when there isn't — a status code is not a sentence, so it becomes the
+// generic message instead of leaking "503" into a toast.
+export function publishErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : "";
+  return message && !/^\d+$/.test(message) ? message : "Couldn't publish this post";
+}
