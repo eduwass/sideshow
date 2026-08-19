@@ -1,0 +1,15 @@
+// The PUBLIC publication service — a separate Worker, Durable Object and
+// database from the private control plane (wrangler.jsonc). Deploy with:
+//
+//   npm run deploy:public
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sideshow-public",
+  "main": "workers/publicService.ts",
+  "compatibility_date": "2026-06-01",
+  "durable_objects": {
+    "bindings": [{ "name": "PUBLICATIONS", "class_name": "SideshowPublications" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SideshowPublications"] }],
+  "observability": { "enabled": true },
+}
