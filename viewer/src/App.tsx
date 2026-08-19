@@ -159,10 +159,12 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
   const [moreOpen, setMoreOpen] = createSignal(false);
   const [shortcutHints, setShortcutHints] = createSignal(false);
+  const focusMain = () =>
+    (root().querySelector("main") as HTMLElement | null)?.focus({ preventScroll: true });
   let edgeSwipe: { pointerId: number; x: number; y: number } | undefined;
 
   const startEdgeSwipe = (event: PointerEvent) => {
-    if (event.pointerType !== "touch" || event.clientX > 24 || navOpen() || streamMode()) return;
+    if (event.pointerType !== "touch" || event.clientX > 36 || navOpen() || streamMode()) return;
     edgeSwipe = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
     try {
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -179,7 +181,7 @@ export default function App() {
       edgeSwipe = undefined;
       return;
     }
-    if (dx >= 56) {
+    if (dx >= 44) {
       edgeSwipe = undefined;
       setNavOpen(true);
     }
@@ -190,6 +192,7 @@ export default function App() {
   };
 
   onMount(() => {
+    requestAnimationFrame(focusMain);
     // Await the initial route resolution (the standalone post fetch, or the
     // first session fetch), then mark the workspace decided and tell the host
     // (onReady). Until then #onboard stays hidden, so neither the empty workspace
@@ -253,6 +256,7 @@ export default function App() {
       if (e.key === "Escape") {
         setMoreOpen(false);
         setNavOpen(false);
+        requestAnimationFrame(focusMain);
       }
       if (e.key === "Meta") setShortcutHints(true);
       if (
@@ -269,6 +273,7 @@ export default function App() {
           setFullPage(null);
           select(session.id);
           setNavOpen(false);
+          requestAnimationFrame(focusMain);
         }
         return;
       }
