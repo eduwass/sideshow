@@ -225,3 +225,85 @@ test("a theme switch in one tab re-themes another open tab via SSE", async ({
     .toBe("#f9f5d7");
   await other.close();
 });
+
+// A theme pushed by an external engine (server/customTheme.ts) has to move the
+// same three layers a picker switch does, plus one more: its CONTENT changes
+// while its id stays "custom", so the surface frames must re-key on the revision
+// or they would keep the first palette.
+const CUSTOM_ACCENT = { bg: "#112233", text: "#445566", border: "#778899" };
+const customPalette = (bg: string) => ({
+  bg,
+  panel: "#222222",
+  surface: "#333333",
+  text: "#eeeeee",
+  muted: "#cccccc",
+  faint: "#999999",
+  border: "#444444",
+  border2: "#555555",
+  hover: "#666666",
+  info: CUSTOM_ACCENT,
+  success: CUSTOM_ACCENT,
+  warning: CUSTOM_ACCENT,
+  danger: CUSTOM_ACCENT,
+});
+
+const pushCustomTheme = async (url: string, bg: string) => {
+  const res = await fetch(`${url}/api/theme/custom`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      version: 1,
+      label: "Monotheme",
+      light: { palette: customPalette(bg) },
+      dark: { palette: customPalette(bg) },
+    }),
+  });
+  expect(res.status).toBe(200);
+  return (await res.json()) as { revision: number };
+};
+
+test("a pushed custom theme re-themes chrome and surfaces, and a re-push is not cached", async ({
+  page,
+  server,
+}) => {
+  await publishParts(server.url, { title: "Themed", agent: "e2e", parts: PARTS });
+  await page.goto(server.url);
+  const iframe = page.locator('.card iframe[src*="part=0"]');
+  await expect(iframe).toHaveAttribute("src", /theme=github/);
+
+  const first = await pushCustomTheme(server.url, "#0a0b0c");
+
+  // layer 1 — chrome palette follows the pushed colours over the live SSE event
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(),
+      ),
+    )
+    .toBe("#0a0b0c");
+  // layer 2 — the sandboxed surface reloads under the custom id AND its revision
+  await expect(iframe).toHaveAttribute("src", /theme=custom/);
+  await expect(iframe).toHaveAttribute("src", new RegExp(`trev=${first.revision}`));
+
+  // A second push keeps the id and changes the content: the frame must re-key on
+  // the new revision, or the browser would reuse the immutable first document.
+  const second = await pushCustomTheme(server.url, "#0d0e0f");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(),
+      ),
+    )
+    .toBe("#0d0e0f");
+  await expect(iframe).toHaveAttribute("src", new RegExp(`trev=${second.revision}`));
+  expect(second.revision).toBeGreaterThan(first.revision);
+});
+
+test("the private chrome carries no wordmark", async ({ page, server }) => {
+  await publishParts(server.url, { title: "Themed", agent: "e2e", parts: PARTS });
+  await page.goto(server.url);
+  const brand = page.locator("aside .brand");
+  await expect(brand).toBeVisible();
+  await expect(brand).not.toContainText(/sideshow/i);
+  await expect(brand).toHaveAttribute("aria-label", "Home");
+});

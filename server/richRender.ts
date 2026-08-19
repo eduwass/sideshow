@@ -26,12 +26,15 @@ import {
   type SupportedLanguages,
 } from "@pierre/diffs";
 import { preloadFileDiff } from "@pierre/diffs/ssr";
-import { preloadHighlighter } from "@pierre/diffs";
-import { type Mode, THEMES, themeById } from "./themes.ts";
+import { preloadHighlighter, registerCustomTheme } from "@pierre/diffs";
+import { DEFAULT_THEME_ID, type Mode, type Theme, THEMES, themeById } from "./themes.ts";
 import type { CodeSurface, DiffSurface, MarkdownSurface, TerminalSurface } from "./types.ts";
 
 export type RenderedSurface = { body: string; css: string };
-export type RenderOpts = { theme?: string; mode?: Mode };
+// `theme` is either a registry id or a resolved Theme — a custom theme pushed by
+// an external engine (customTheme.ts) has no entry in THEMES, so callers that
+// already resolved it hand the object over instead of a name to look up.
+export type RenderOpts = { theme?: string | Theme; mode?: Mode };
 
 // ---------------------------------------------------------------------------
 // shiki: one shared highlighter on the JS regex engine (no oniguruma WASM —
@@ -97,9 +100,50 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function shikiPair(theme?: string): { light: string; dark: string } {
-  const t = themeById(theme);
+function resolveTheme(theme?: string | Theme): Theme {
+  return typeof theme === "string" || theme == null ? themeById(theme) : theme;
+}
+
+function shikiPair(theme?: string | Theme): { light: string; dark: string } {
+  const t = resolveTheme(theme);
   return { light: t.shiki.light, dark: t.shiki.dark };
+}
+
+// --- custom (pushed) syntax themes -----------------------------------------
+//
+// A custom theme carries its shiki theme as DATA, so it must be loaded into the
+// two highlighters before anything highlights against its name: shiki's own
+// singleton (markdown + code) and @pierre/diffs' theme resolver (diffs). Names
+// are revision-scoped by customSyntaxName, so a re-push never reuses a name and
+// old content can never be highlighted with new colors, or the reverse.
+//
+// ponytail: loaded themes are never unloaded — shiki has no API for it — so the
+// singleton is rebuilt once the set of pushed themes exceeds MAX_CUSTOM_SYNTAX
+// rather than growing without bound. A rebuild costs one re-highlight.
+const MAX_CUSTOM_SYNTAX = 8;
+const loadedCustomSyntax = new Set<string>();
+
+export async function applyCustomSyntax(
+  themes: { name: string; theme: Record<string, unknown> }[],
+): Promise<void> {
+  const pending = themes.filter((t) => !loadedCustomSyntax.has(t.name));
+  if (pending.length === 0) return;
+  if (loadedCustomSyntax.size + pending.length > MAX_CUSTOM_SYNTAX) {
+    loadedCustomSyntax.clear();
+    highlighterPromise = null;
+  }
+  const hl = await getHighlighter();
+  for (const { name, theme } of pending) {
+    // Both registrations are best-effort: a theme the highlighters reject must
+    // degrade to unhighlighted code, never fail the whole surface render.
+    try {
+      await hl.loadTheme(theme as never);
+      registerCustomTheme(name, async () => theme as never);
+      loadedCustomSyntax.add(name);
+    } catch {
+      // leave it unregistered; shikiPair's name simply will not resolve
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -383,15 +427,27 @@ export async function renderDiff(
   part: DiffSurface,
   opts: RenderOpts = {},
 ): Promise<RenderedSurface> {
-  const t = themeById(opts.theme);
-  const shiki = { dark: t.shiki.dark, light: t.shiki.light };
+  const t = resolveTheme(opts.theme);
+  let shiki = { dark: t.shiki.dark, light: t.shiki.light };
   const { diffs, langs } = buildFileDiffs(part);
   if (diffs.length === 0) throw new Error("No diff content.");
-  await preloadHighlighter({
-    themes: [shiki.dark, shiki.light],
-    langs: langs as SupportedLanguages[],
-    preferredHighlighter: "shiki-js",
-  });
+  const preload = (pair: { dark: string; light: string }) =>
+    preloadHighlighter({
+      themes: [pair.dark, pair.light],
+      langs: langs as SupportedLanguages[],
+      preferredHighlighter: "shiki-js",
+    });
+  try {
+    await preload(shiki);
+  } catch (err) {
+    // A pushed custom syntax theme the diff highlighter would not take must not
+    // turn the whole diff into an error card — fall back to the bundled default
+    // pair. A bundled name failing is a real bug, so let that one through.
+    const fallback = themeById(DEFAULT_THEME_ID);
+    if (shiki.dark === fallback.shiki.dark && shiki.light === fallback.shiki.light) throw err;
+    shiki = { dark: fallback.shiki.dark, light: fallback.shiki.light };
+    await preload(shiki);
+  }
   const options = {
     diffStyle: part.layout ?? "unified",
     theme: { dark: shiki.dark, light: shiki.light },

@@ -544,24 +544,6 @@ main {
 .standalone-main .card {
   margin-bottom: 0;
 }
-.standalone-foot {
-  margin-top: 18px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--faint);
-}
-.standalone-foot a {
-  color: var(--faint);
-  text-decoration: none;
-}
-.standalone-foot a:hover {
-  color: var(--muted);
-  text-decoration: underline;
-}
-.standalone-foot strong {
-  font-weight: 600;
-  color: var(--muted);
-}
 
 .card {
   background: var(--surface);
@@ -2324,9 +2306,6 @@ iframe {
     border-left: 0;
     border-right: 0;
     border-radius: 0;
-  }
-  .standalone-foot {
-    padding: 0 12px;
   }
   .view-toggle {
     width: 100%;

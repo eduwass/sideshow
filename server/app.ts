@@ -25,7 +25,18 @@ import {
   renderMermaidPage,
   renderSandboxedPart,
 } from "./surfacePage.ts";
-import { DEFAULT_THEME_ID, themeById, themeOptions } from "./themes.ts";
+import {
+  CUSTOM_THEME_ID,
+  CUSTOM_THEME_SETTING,
+  CUSTOM_THEME_VERSION,
+  type CustomThemeRecord,
+  customSyntaxThemes,
+  customThemeToTheme,
+  deserializeCustomTheme,
+  parseCustomTheme,
+  serializeCustomTheme,
+} from "./customTheme.ts";
+import { DEFAULT_THEME_ID, type Theme, themeById, themeOptions } from "./themes.ts";
 import {
   type Asset,
   type AssetKind,
@@ -380,6 +391,27 @@ export function createApp({
     }
     return doc;
   }
+
+  // --- custom theme (pushed by an external theme engine; see customTheme.ts) ---
+  //
+  // The record is read from settings on demand rather than cached in a closure:
+  // a Durable Object can be evicted and rebuilt between requests, and the store
+  // is the only authority. Its `revision` is what every theme-keyed cache below
+  // adds to its key, because a custom theme's CONTENT changes under a fixed id.
+  const loadCustomTheme = async (): Promise<CustomThemeRecord | null> =>
+    deserializeCustomTheme(await store.getSetting(CUSTOM_THEME_SETTING));
+
+  const customThemeOf = (record: CustomThemeRecord | null): Theme | null =>
+    record ? customThemeToTheme(record) : null;
+
+  // The workspace's active theme, the custom record, and the revision that makes
+  // otherwise-identical cache keys distinct across pushes.
+  const resolveWorkspaceTheme = async (requested?: string | null) => {
+    const record = await loadCustomTheme();
+    const custom = customThemeOf(record);
+    const id = requested ?? (await store.getSetting("theme")) ?? DEFAULT_THEME_ID;
+    return { theme: themeById(id, custom), id, record, revision: record?.revision ?? 0 };
+  };
 
   // Last-resort safety net: any handler that throws (rather than returning a
   // status) becomes a clean JSON 500 instead of leaking a stack or a bare crash.
@@ -1005,8 +1037,15 @@ export function createApp({
       pageTitle,
     );
     if (!opts.post) return html;
-    const themeId = (await store.getSetting("theme")) ?? DEFAULT_THEME_ID;
-    return injectHead(html, postPreviewHead(opts.post, c.req.raw, themeId, version ?? "dev"));
+    const active = await resolveWorkspaceTheme();
+    // The renderer generation carries the custom-theme revision, so a re-themed
+    // workspace advertises a different image URL instead of letting a social
+    // cache keep serving the previous palette.
+    const generation =
+      active.id === CUSTOM_THEME_ID && active.revision > 0
+        ? `${version ?? "dev"}-t${active.revision}`
+        : (version ?? "dev");
+    return injectHead(html, postPreviewHead(opts.post, c.req.raw, active.id, generation));
   };
   app.get("/", async (c) => c.html(await configuredViewerHtml(c)));
   app.get("/connect", async (c) =>
@@ -1411,19 +1450,63 @@ export function createApp({
   // --- theme (one workspace-level setting) ---
 
   app.get("/api/theme", async (c) => {
+    const record = await loadCustomTheme();
+    const custom = customThemeOf(record);
     const id = (await store.getSetting("theme")) ?? DEFAULT_THEME_ID;
-    return c.json({ id, themes: themeOptions() });
+    // `custom` ships the FULL resolved theme (both palettes + the shiki names),
+    // because the viewer resolves ids against its own bundled copy of the
+    // registry and has no other way to learn a runtime-registered one.
+    return c.json({
+      id,
+      themes: themeOptions(custom),
+      custom,
+      customRevision: record?.revision ?? 0,
+    });
   });
 
   app.put("/api/theme", async (c) => {
     const body = await c.req.json().catch(() => null);
     const id = body && typeof body.id === "string" ? body.id : null;
-    if (!id || !themeOptions().some((t) => t.id === id)) {
+    const record = await loadCustomTheme();
+    if (!id || !themeOptions(customThemeOf(record)).some((t) => t.id === id)) {
       return c.json({ error: "unknown theme id" }, 400);
     }
     await store.setSetting("theme", id);
-    bus.broadcast({ type: "theme-changed", id });
+    bus.broadcast({ type: "theme-changed", id, ...(record ? { revision: record.revision } : {}) });
     return c.json({ id });
+  });
+
+  // Accept a themed palette pushed by an external theme engine (monotheme). The
+  // payload is validated in full before anything is persisted — an unparsed
+  // colour must never reach a stylesheet — and every ACCEPTED payload bumps the
+  // revision, which is what defeats every cache keyed on the (unchanged) theme
+  // id: the /s/:id render cache, the surface iframe URLs, and the HTTP
+  // `immutable` response header all carry it.
+  app.put("/api/theme/custom", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = parseCustomTheme(body);
+    if (!parsed.ok) return c.json({ error: parsed.error, version: CUSTOM_THEME_VERSION }, 400);
+    const previous = await loadCustomTheme();
+    const record: CustomThemeRecord = {
+      revision: (previous?.revision ?? 0) + 1,
+      payload: parsed.theme,
+    };
+    await store.setSetting(CUSTOM_THEME_SETTING, serializeCustomTheme(record));
+    // Following the machine's theme is the whole point, so an accepted push also
+    // selects it — otherwise the first push would change nothing visible.
+    await store.setSetting("theme", CUSTOM_THEME_ID);
+    bus.broadcast({ type: "theme-changed", id: CUSTOM_THEME_ID, revision: record.revision });
+    return c.json({ id: CUSTOM_THEME_ID, revision: record.revision, label: record.payload.label });
+  });
+
+  app.delete("/api/theme/custom", async (c) => {
+    const record = await loadCustomTheme();
+    await store.setSetting(CUSTOM_THEME_SETTING, "");
+    const active = (await store.getSetting("theme")) ?? DEFAULT_THEME_ID;
+    const id = active === CUSTOM_THEME_ID ? DEFAULT_THEME_ID : active;
+    if (id !== active) await store.setSetting("theme", id);
+    bus.broadcast({ type: "theme-changed", id, revision: (record?.revision ?? 0) + 1 });
+    return c.json({ id, removed: record != null });
   });
 
   // --- sessions ---
@@ -1989,8 +2072,12 @@ export function createApp({
     c.header("Content-Security-Policy", "sandbox allow-scripts");
     // Theme: an explicit ?theme= (the viewer keys iframe srcs by it so a switch
     // reloads the frame) wins; otherwise the persisted workspace theme; else default.
-    const themeId = c.req.query("theme") ?? (await store.getSetting("theme")) ?? DEFAULT_THEME_ID;
-    const theme = themeById(themeId);
+    const resolved = await resolveWorkspaceTheme(c.req.query("theme"));
+    const themeId = resolved.id;
+    const theme = resolved.theme;
+    // A custom theme's content changes under a fixed id, so its revision joins
+    // every key that would otherwise say "same theme, same output".
+    const themeRevision = themeId === CUSTOM_THEME_ID ? resolved.revision : 0;
     // Scheme: the viewer passes the light/dark mode it resolved so the iframe is
     // pinned to it rather than re-deriving from the OS (which can diverge from
     // the chrome across the frame boundary). Absent/invalid → follow the OS.
@@ -2002,8 +2089,15 @@ export function createApp({
     // on; the resolved `version` makes it immutable, so a hit is always correct.
     // Versioned + themed requests (what the viewer always sends) are immutable,
     // so allow long-lived shared caching; an unpinned direct load is not.
-    const cacheKey = `${post.id}:${idx}:${version}:${themeId}:${mode ?? "os"}`;
-    const immutable = c.req.query("ver") != null && c.req.query("theme") != null;
+    const cacheKey = `${post.id}:${idx}:${version}:${themeId}:${themeRevision}:${mode ?? "os"}`;
+    // `immutable` promises a browser it may keep this document for a year. A
+    // custom theme only earns that promise when the caller pinned the revision
+    // it is asking for (`trev`), because the id alone no longer identifies the
+    // pixels — the viewer puts the revision in every surface iframe URL.
+    const immutable =
+      c.req.query("ver") != null &&
+      c.req.query("theme") != null &&
+      (themeRevision === 0 || c.req.query("trev") === String(themeRevision));
     if (immutable) c.header("Cache-Control", "public, max-age=31536000, immutable");
     else c.header("Cache-Control", "private, no-cache");
 
@@ -2034,16 +2128,21 @@ export function createApp({
       // needs no network at runtime. test/workerIntegration covers that on real
       // workerd, because a dynamic import resolving differently there is exactly the
       // way this optimization could break in production and nowhere else.
-      const { renderCode, renderDiff, renderMarkdown, renderTerminal } =
+      const { applyCustomSyntax, renderCode, renderDiff, renderMarkdown, renderTerminal } =
         await import("./richRender.ts");
+      // A pushed theme carries its syntax colors as data; load them into the
+      // highlighters (under revision-scoped names) before highlighting.
+      if (resolved.record && themeId === CUSTOM_THEME_ID) {
+        await applyCustomSyntax(customSyntaxThemes(resolved.record));
+      }
       const rendered =
         surface.kind === "markdown"
-          ? await renderMarkdown(surface as MarkdownSurface, { theme: themeId, mode })
+          ? await renderMarkdown(surface as MarkdownSurface, { theme, mode })
           : surface.kind === "code"
-            ? await renderCode(surface as CodeSurface, { theme: themeId, mode })
+            ? await renderCode(surface as CodeSurface, { theme, mode })
             : surface.kind === "terminal"
               ? renderTerminal(surface as TerminalSurface)
-              : await renderDiff(surface as DiffSurface, { theme: themeId, mode }).catch((e) => ({
+              : await renderDiff(surface as DiffSurface, { theme, mode }).catch((e) => ({
                   body: `<div class="rich-error">Couldn’t render diff — ${escapeHtml(
                     e instanceof Error ? e.message : "render error",
                   )}</div>`,

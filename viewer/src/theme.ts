@@ -13,12 +13,24 @@ import { themeTokens } from "../../server/theme-tokens.ts";
 import {
   DEFAULT_THEME_ID,
   type Mode,
+  type Theme,
   themeById,
-  themeOptions,
+  themeOptions as registryOptions,
   viewerThemeCss,
 } from "../../server/themes.ts";
 
-export { themeOptions };
+// A theme pushed into this workspace by an external theme engine (see
+// server/customTheme.ts). It is not in the bundled registry, so the viewer holds
+// the resolved object the server handed it and passes it to every lookup.
+const [customThemeState, setCustomTheme] = createSignal<Theme | null>(null);
+export const customTheme = customThemeState;
+// Bumped by the server on every accepted push. Surface iframes carry it as
+// `trev`, so re-themed content can never be served from a cache keyed on the
+// (unchanged) theme id — neither the server's render cache nor the browser's.
+const [themeRevisionState, setThemeRevision] = createSignal(0);
+export const themeRevision = themeRevisionState;
+
+export const themeOptions = () => registryOptions(customThemeState());
 
 export type ColorModePreference = "system" | Mode;
 
@@ -80,7 +92,7 @@ darkQuery?.addEventListener("change", (e) => {
 function emitThemeTokens() {
   const theme = activeThemeState();
   const mode = resolvedMode();
-  host().onThemeChange?.(themeTokens(themeById(theme), mode), { theme, mode });
+  host().onThemeChange?.(themeTokens(themeById(theme, customThemeState()), mode), { theme, mode });
 }
 
 const STYLE_ID = "ss-theme-vars";
@@ -100,23 +112,39 @@ function applyPalette(id: string) {
   const preference = colorModePreferenceState();
   const scheme = preference === "system" ? undefined : preference;
   const colorSchemeCss = `:root{color-scheme:${scheme ?? "light dark"};}`;
-  const css = `${viewerThemeCss(themeById(id), scheme)}${colorSchemeCss}`;
+  const css = `${viewerThemeCss(themeById(id, customThemeState()), scheme)}${colorSchemeCss}`;
   el.textContent = isShadow() ? css.replace(/:root\b/g, ":host") : css;
 }
 
 // Apply locally without a server round-trip (used by initial load + SSE).
 export function applyTheme(id: string) {
-  const theme = themeById(id);
+  const theme = themeById(id, customThemeState());
   applyPalette(theme.id);
   setActiveTheme(theme.id);
   syncModeCookie();
   emitThemeTokens();
 }
 
+interface ThemeResponse {
+  id: string;
+  custom?: Theme | null;
+  customRevision?: number;
+}
+
+// Fetch the persisted workspace theme (and any pushed custom theme) and apply
+// it. Also the handler for a `theme-changed` event carrying a revision: the
+// custom theme's CONTENT may have changed under the same id, so re-reading is
+// the only way to learn its new palette.
+export async function refreshTheme() {
+  const res = await api<ThemeResponse>("/api/theme").catch(() => null);
+  setCustomTheme(res?.custom ?? null);
+  setThemeRevision(res?.customRevision ?? 0);
+  applyTheme(res?.id ?? DEFAULT_THEME_ID);
+}
+
 // Fetch the persisted workspace theme on startup.
 export async function initTheme() {
-  const res = await api<{ id: string }>("/api/theme").catch(() => null);
-  applyTheme(res?.id ?? DEFAULT_THEME_ID);
+  await refreshTheme();
 }
 
 // User picked a theme: persist + apply. The PUT broadcasts theme-changed to

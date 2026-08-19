@@ -14,6 +14,11 @@ import {
   publicSurfaceView,
 } from "../server/publicApp.ts";
 import {
+  CUSTOM_THEME_ID,
+  CUSTOM_THEME_SETTING,
+  CUSTOM_THEME_VERSION,
+} from "../server/customTheme.ts";
+import {
   OPEN_EVENT_RETENTION_DAYS,
   type ShareLink,
   type Snapshot,
@@ -186,6 +191,8 @@ test("no private-runtime route exists on the public app", async () => {
     ["GET", "/api/events"],
     ["GET", "/api/theme"],
     ["POST", "/api/theme"],
+    ["PUT", "/api/theme/custom"],
+    ["DELETE", "/api/theme/custom"],
     ["GET", "/api/kits"],
     ["GET", "/api/version"],
     ["GET", "/api/assets"],
@@ -850,6 +857,53 @@ test("every sandboxed surface is served as its own document under a sandbox CSP"
   assert.equal(themed.status, 200);
   const bogusTheme = await get(app, `/api/v/demo-slug/s/0/${CODE}?theme=nope&mode=sideways`);
   assert.equal(bogusTheme.status, 200);
+});
+
+// Custom-theme sync is a PRIVATE-runtime concern (issue #11): a publication is
+// a client-facing artifact and keeps the neutral default palette no matter what
+// the owner's machine theme happens to be.
+test("a pushed custom theme cannot reach a publication page", async () => {
+  const { app, store } = await seed();
+  const before = await (await get(app, `/api/v/demo-slug/s/0/${HTML}`)).text();
+
+  // Write the record the private runtime would persist, on the SAME store.
+  const accent = { bg: "#010203", text: "#040506", border: "#070809" };
+  const palette = {
+    bg: "#ff00ff",
+    panel: "#ff00ff",
+    surface: "#ff00ff",
+    text: "#ff00ff",
+    muted: "#ff00ff",
+    faint: "#ff00ff",
+    border: "#ff00ff",
+    border2: "#ff00ff",
+    hover: "#ff00ff",
+    info: accent,
+    success: accent,
+    warning: accent,
+    danger: accent,
+  };
+  await store.setSetting(
+    CUSTOM_THEME_SETTING,
+    JSON.stringify({
+      revision: 4,
+      payload: { version: CUSTOM_THEME_VERSION, label: "Monotheme", dark: { palette } },
+    }),
+  );
+
+  // Asking for it by id changes nothing either — the public app resolves ids
+  // against the bundled registry only, so an unknown id falls back to default.
+  for (const path of [
+    `/api/v/demo-slug/s/0/${HTML}`,
+    `/api/v/demo-slug/s/0/${HTML}?theme=${CUSTOM_THEME_ID}`,
+    `/api/v/demo-slug/s/0/${HTML}?theme=${CUSTOM_THEME_ID}&trev=4`,
+  ]) {
+    const res = await get(app, path);
+    assert.equal(res.status, 200, path);
+    const body = await res.text();
+    assert.equal(body.includes("#ff00ff"), false, path);
+    assert.equal(body, before, path);
+  }
 });
 
 test("native and out-of-range surfaces are not reachable as documents", async () => {

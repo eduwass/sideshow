@@ -80,6 +80,15 @@ consciously, not as a side effect):
   viewer-chrome vars and the html-surface `--color-*` tokens are both _derived_
   from it, so they can't drift. Persisted per workspace (`Store.getSetting`),
   switched at `/api/theme`.
+- `server/customTheme.ts` — the versioned contract an EXTERNAL theme engine
+  (monotheme) pushes at `PUT /api/theme/custom` (private runtime only; the
+  public app has no such route). `parseCustomTheme` rebuilds the payload from
+  validated colours — nothing unparsed ever reaches CSS — and every accepted
+  push bumps a `revision`. That revision joins every theme-keyed cache: the
+  `/s/:id` render-cache key, the surface iframe URLs (`trev`), the `immutable`
+  response header, and the social-card generation. A custom theme is passed
+  around as a resolved `Theme` (`themeById(id, custom)`), never held in module
+  state — one process serves many workspaces.
 - `server/mcpHttp.ts` — stateless MCP at `/mcp`. `mcp/server.ts` — stdio MCP,
   a thin client over the HTTP API (passes response fields through untouched).
 - `viewer/` — the viewer: Solid + TypeScript in `viewer/src/`, built by Vite

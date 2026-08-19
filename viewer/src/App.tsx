@@ -111,24 +111,28 @@ const [fullPage, setFullPage] = createSignal<FullPageView>(fullPageFromPath());
 // self-hosted public-read "session" link (see api.ts `layoutMode`).
 const streamMode = () => layoutMode() === "stream";
 
-// The wordmark, doubling as a home link: clicking it clears the current session
-// and returns to the empty workspace (goHome). A real <button> so it's keyboard- and
-// screen-reader-reachable; it shares the .brand styling with the static header
-// and aside wordmarks. This is the guaranteed way back to the workspace when no
-// session is selectable in the sidebar — e.g. an embedding host (sideshow cloud)
-// showing a full-page view over an empty workspace.
+// The home link, plus the live-connection dot. It carries NO wordmark: the app
+// is one person's private workspace and needs no product branding in its chrome
+// (issue #11). The label is the neutral "Home" — the control is structurally a
+// button and still needs an accessible name. Keep it unbranded; do not put a
+// product or personal name back here.
+//
+// A real <button> so it's keyboard- and screen-reader-reachable; it keeps the
+// .brand class, which is the shared header/aside home-link styling and the hook
+// an embedding host's `hideBrand` suppresses. This is the guaranteed way back to
+// the workspace when no session is selectable in the sidebar.
 function Brand() {
   return (
     <button
       class="brand"
       type="button"
-      aria-label="sideshow — home"
+      aria-label="Home"
       onClick={() => {
         setFullPage(null);
         goHome();
       }}
     >
-      <span class="livedot" classList={{ on: live() }}></span>sideshow
+      <span class="livedot" classList={{ on: live() }}></span>Home
     </button>
   );
 }
@@ -429,21 +433,17 @@ export default function App() {
   );
 }
 
-// The full-page view a bare /s/:id direct link lands on: just the one post,
-// no sidebar/session chrome/comments, with a small sideshow watermark beneath
-// it. The Card renders in `standalone` mode (title + surfaces only); its
-// iframes are sized by the same postMessage bridge the workspace uses (it resolves
-// any registered card, so a standalone card sizes identically).
+// The full-page view a bare /s/:id direct link lands on: just the one post, no
+// sidebar/session chrome/comments, and no watermark — the private app carries no
+// product branding (issue #11). The Card renders in `standalone` mode (title +
+// surfaces only); its iframes are sized by the same postMessage bridge the
+// workspace uses (it resolves any registered card, so a standalone card sizes
+// identically).
 function StandaloneView(props: { post: Post }) {
   return (
     <div id="standalone">
       <main class="standalone-main">
         <Card post={props.post} standalone />
-        <footer class="standalone-foot">
-          <a href="https://sideshow.sh" target="_blank" rel="noopener noreferrer">
-            made with <strong>sideshow</strong>
-          </a>
-        </footer>
       </main>
     </div>
   );

@@ -28,7 +28,7 @@ import { ShareMenu } from "./ShareMenu.tsx";
 import { root } from "./host.ts";
 import { ImageSurface } from "./ImageSurface.tsx";
 import { JsonSurface } from "./JsonSurface.tsx";
-import { activeTheme, resolvedMode } from "./theme.ts";
+import { activeTheme, resolvedMode, themeRevision } from "./theme.ts";
 import { TraceSurface } from "./TraceSurface.tsx";
 import {
   comments,
@@ -209,9 +209,12 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
       ? `${props.post.title} (surface ${surfaceIndex + 1})`
       : props.post.title;
 
+  // `trev` is the custom-theme revision: a pushed theme keeps the same id while
+  // its colors change, so without it the frame (and the server's render cache,
+  // and the browser's immutable copy) would keep the previous palette.
   const surfaceSrc = (surfaceIndex: number) =>
     appPath(
-      `/s/${props.post.id}?part=${surfaceIndex}&ver=${props.post.version}&cb=${props.post.version}&theme=${activeTheme()}&mode=${resolvedMode()}`,
+      `/s/${props.post.id}?part=${surfaceIndex}&ver=${props.post.version}&cb=${props.post.version}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}`,
     );
 
   const anchoredComments = (surfaceIndex: number) =>
@@ -385,7 +388,7 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
                     for (const [surface, frame] of surfaceFrames) {
                       // `?part=` is the legacy wire query key for a surface index.
                       frame.src = appPath(
-                        `/s/${props.post.id}?part=${surface}&ver=${ver}&cb=${cb}&theme=${activeTheme()}&mode=${resolvedMode()}`,
+                        `/s/${props.post.id}?part=${surface}&ver=${ver}&cb=${cb}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}`,
                       );
                     }
                   }}

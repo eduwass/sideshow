@@ -134,7 +134,10 @@ test("readonly session-mode viewer renders without sidebar chrome", async ({ pag
     await expect(page.locator("button.menu")).toHaveCount(0);
     await expect(page.locator("#scrim")).toHaveCount(0);
     await expect(page.locator("#onboard")).toHaveCount(0);
-    await expect(page.locator(".topbar .brand")).toContainText("sideshow");
+    // The home control is present but unbranded — the private chrome carries no
+    // wordmark (issue #11).
+    await expect(page.locator(".topbar .brand")).toHaveCount(1);
+    await expect(page.locator(".topbar .brand")).not.toContainText("sideshow");
     await expect(page.locator(".card:not(#whatsNew)")).toBeVisible();
   } finally {
     server.stop();
