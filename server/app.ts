@@ -48,7 +48,15 @@ import {
   type TraceStep,
 } from "./types.ts";
 import { validateSurfaces } from "./postSurfaces.ts";
-import { frozenItem, publicationStatusForPost, publishItems } from "./publishFlow.ts";
+import {
+  collectionPreview,
+  frozenCollection,
+  publicationStatusForPost,
+  publicationStatusForSession,
+  publishItems,
+  sessionCollectionTitle,
+  frozenItem,
+} from "./publishFlow.ts";
 import {
   findWelcomePost,
   WELCOME_POST_TITLE,
@@ -1069,6 +1077,69 @@ export function createApp({
         }),
         201,
       );
+    } catch (err) {
+      return destinationFailure(c, err);
+    }
+  });
+
+  // The mandatory confirmation view's source: every current post of the
+  // session, in order, with enough detail to recognise each one.
+  app.get("/api/publish/session/:id/preview", async (c) => {
+    const session = await store.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "session not found" }, 404);
+    return c.json(collectionPreview(session, await store.listPosts(session.id)));
+  });
+
+  // Publishing a session takes the REVIEWED list of post ids, never "whatever
+  // is in the session right now" — so a publish or an update cannot happen
+  // without the confirmation view having been seen.
+  app.post("/api/publish/session", async (c) => {
+    if (!destinationClient) return c.json({ error: "no publication destination" }, 503);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const session = await store.getSession(
+      typeof body.sessionId === "string" ? body.sessionId : "",
+    );
+    if (!session) return c.json({ error: "session not found" }, 404);
+    const postIds = Array.isArray(body.postIds)
+      ? body.postIds.filter((id): id is string => typeof id === "string")
+      : null;
+    if (!postIds || postIds.length === 0) {
+      return c.json({ error: "confirm which posts to include first" }, 400);
+    }
+    const posts = await store.listPosts(session.id);
+    const known = new Set(posts.map((post) => post.id));
+    const stranger = postIds.find((id) => !known.has(id));
+    if (stranger) return c.json({ error: "that post is not in this session" }, 400);
+    const items = frozenCollection(posts, postIds);
+    if (items.length === 0) return c.json({ error: "nothing publishable in that selection" }, 400);
+    try {
+      return c.json(
+        await publishItems({
+          store,
+          client: destinationClient,
+          title:
+            typeof body.title === "string" && body.title.trim()
+              ? body.title.trim()
+              : sessionCollectionTitle(session),
+          items,
+          kind: "collection",
+          originSessionId: session.id,
+          originPostId: null,
+        }),
+        201,
+      );
+    } catch (err) {
+      return destinationFailure(c, err);
+    }
+  });
+
+  app.get("/api/publish/session/:id", async (c) => {
+    if (!destinationClient) return c.json({ published: false, configured: false });
+    try {
+      return c.json({
+        configured: true,
+        ...(await publicationStatusForSession(destinationClient, c.req.param("id"))),
+      });
     } catch (err) {
       return destinationFailure(c, err);
     }

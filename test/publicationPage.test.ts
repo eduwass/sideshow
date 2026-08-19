@@ -185,12 +185,48 @@ test("basePath prefixes every URL the page builds", () => {
 
 test("item headings appear only when a snapshot holds more than one item", () => {
   const single = render({ items: [item({ title: "Only one" })] });
-  assert.equal(single.includes("<h2>"), false);
+  assert.equal(single.includes("<h2"), false);
   assert.equal(single.includes("Only one"), false, "a lone item's title is not repeated");
 
   const many = render({ items: [item({ title: "First" }), item({ title: "Second" })] });
-  assert.match(many, /<h2>First<\/h2>/);
-  assert.match(many, /<h2>Second<\/h2>/);
+  assert.match(many, /<h2 id="item-0">First<\/h2>/);
+  assert.match(many, /<h2 id="item-1">Second<\/h2>/);
+});
+
+// --- contents nav -------------------------------------------------------
+
+test("a collection gets a contents nav whose anchors match the item headings", () => {
+  const html = render({
+    items: [item({ title: "First" }), item({ title: "Second" }), item({ title: "Third" })],
+  });
+  assert.match(
+    html,
+    /<nav class="contents"><p>Contents<\/p><ol><li><a href="#item-0">First<\/a><\/li><li><a href="#item-1">Second<\/a><\/li><li><a href="#item-2">Third<\/a><\/li><\/ol><\/nav>/,
+  );
+  // The nav sits between the title and the items it links to.
+  assert.ok(html.indexOf("<h1>") < html.indexOf('nav class="contents"'));
+  assert.ok(html.indexOf('nav class="contents"') < html.indexOf('<section class="item">'));
+  // Every anchor has a heading to land on — no link into nowhere.
+  for (const index of [0, 1, 2]) {
+    assert.equal(html.split(`href="#item-${index}"`).length - 1, 1);
+    assert.equal(html.split(`<h2 id="item-${index}">`).length - 1, 1);
+  }
+});
+
+test("a single-item snapshot has no contents nav and nothing to anchor", () => {
+  const html = render({ items: [item({ title: "Only one" })] });
+  assert.equal(html.includes('nav class="contents"'), false);
+  assert.equal(html.includes("#item-0"), false);
+  assert.equal(html.includes("<h2"), false);
+});
+
+test("a malicious item title is escaped in the contents nav too", () => {
+  const html = render({ items: [item({ title: XSS }), item({ title: "Second" })] });
+  assert.equal(html.includes("<script>alert"), false);
+  assert.match(
+    html,
+    /<li><a href="#item-0">&lt;script&gt;alert\(1\)&lt;\/script&gt;&quot;<\/a><\/li>/,
+  );
 });
 
 // --- identity header ----------------------------------------------------

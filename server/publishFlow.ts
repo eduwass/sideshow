@@ -1,7 +1,7 @@
 import { encodeBase64 } from "./base64.ts";
 import type { DestinationClient } from "./destination.ts";
 import type { Publication, ShareLink, Snapshot, SnapshotItem } from "./publicationTypes.ts";
-import { collectAssetIds, type Post, type Store, type Surface } from "./types.ts";
+import { collectAssetIds, type Post, type Session, type Store, type Surface } from "./types.ts";
 
 // Publishing one private post to the public service.
 //
@@ -163,6 +163,86 @@ export async function publicationStatusForPost(
     `/api/owner/publications?originPostId=${encodeURIComponent(postId)}`,
   );
   const publication = found.find((p) => p.kind === "post");
+  if (!publication) return { published: false };
+  const detail = await client.request<{
+    publication: Publication;
+    snapshots: { revision: number }[];
+    links: ShareLink[];
+  }>(`/api/owner/publications/${encodeURIComponent(publication.id)}`);
+  const link = detail.links[0];
+  return {
+    published: true,
+    publicationId: publication.id,
+    ...(link && { url: `${client.origin}/v/${link.slug}` }),
+    revision: detail.snapshots[0]?.revision,
+    updatedAt: publication.updatedAt,
+    links: detail.links.length,
+  };
+}
+
+// --- collections ---
+
+// What the mandatory confirmation view lists before a session is published or
+// updated. Metadata only: enough to recognise every post that is about to
+// become client-facing, without shipping the bodies to build that list.
+export interface CollectionPreviewPost {
+  postId: string;
+  title: string;
+  version: number;
+  surfaceKinds: string[];
+  updatedAt: string;
+  publishable: boolean;
+}
+
+export interface CollectionPreview {
+  sessionId: string;
+  title: string;
+  posts: CollectionPreviewPost[];
+}
+
+export const sessionCollectionTitle = (session: Session): string =>
+  session.title || (session.agent ? `${session.agent} session` : "Session");
+
+export function collectionPreview(session: Session, posts: Post[]): CollectionPreview {
+  return {
+    sessionId: session.id,
+    title: sessionCollectionTitle(session),
+    // Defaults to every current post of the session, in session order.
+    posts: posts.map((post) => ({
+      postId: post.id,
+      title: post.title,
+      version: post.version,
+      surfaceKinds: post.surfaces.map((surface) => surface.kind),
+      updatedAt: post.updatedAt,
+      publishable: publishableSurfaces(post.surfaces).length > 0,
+    })),
+  };
+}
+
+// Freeze the reviewed subset, in the session's own order rather than the order
+// the client happened to send — the confirmation view shows the session order,
+// so that is what gets published.
+export function frozenCollection(posts: Post[], postIds: string[]): SnapshotItem[] {
+  const wanted = new Set(postIds);
+  const items: SnapshotItem[] = [];
+  for (const post of posts) {
+    if (!wanted.has(post.id)) continue;
+    const item = frozenItem(post);
+    // Typed surfaces stay typed: each post keeps its own ordered surfaces
+    // rather than being flattened into one blob.
+    if (item && item.surfaces.length > 0) items.push(item);
+  }
+  return items;
+}
+
+export async function publicationStatusForSession(
+  client: DestinationClient,
+  sessionId: string,
+): Promise<PublicationStatus> {
+  const found = await client.request<Publication[]>(
+    `/api/owner/publications?originSessionId=${encodeURIComponent(sessionId)}`,
+  );
+  const publication = found.find((p) => p.kind === "collection");
   if (!publication) return { published: false };
   const detail = await client.request<{
     publication: Publication;

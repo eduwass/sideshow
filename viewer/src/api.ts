@@ -216,7 +216,78 @@ export function publishPost(postId: string, version?: number): Promise<PublishPo
 // api() throws the server's `error` string when there is one and the bare status
 // code when there isn't — a status code is not a sentence, so it becomes the
 // generic message instead of leaking "503" into a toast.
-export function publishErrorMessage(err: unknown): string {
+function serverErrorMessage(err: unknown, fallback: string): string {
   const message = err instanceof Error ? err.message : "";
-  return message && !/^\d+$/.test(message) ? message : "Couldn't publish this post";
+  return message && !/^\d+$/.test(message) ? message : fallback;
+}
+
+export function publishErrorMessage(err: unknown): string {
+  return serverErrorMessage(err, "Couldn't publish this post");
+}
+
+// Why a publish affordance can be offered and still be inert. Shared by the
+// card's share menu and the session header so the two explain it identically.
+export const NO_DESTINATION =
+  "This workspace has no publication destination configured. See the README.";
+
+// --- publishing a whole session as a collection ---
+//
+// A collection is published from a REVIEWED list of post ids, never from
+// "whatever is in the session right now" — so the viewer first asks the server
+// what the session currently holds (the preview) and only sends what the user
+// confirmed.
+
+export type CollectionPreviewPost = {
+  postId: string;
+  title: string;
+  version: number;
+  surfaceKinds: string[];
+  updatedAt: string;
+  // False when the post has no surface the destination can render — it is still
+  // listed (so the review is of the whole session) but can never be included.
+  publishable: boolean;
+};
+
+export type CollectionPreview = {
+  sessionId: string;
+  title: string;
+  posts: CollectionPreviewPost[];
+};
+
+// The session publish answers with the same shape a post publish does.
+export type PublishSessionResult = PublishPostResult;
+
+export function sessionPreviewPath(id: string): string {
+  return `/api/publish/session/${encodeURIComponent(id)}/preview`;
+}
+
+export function sessionPublicationStatusPath(id: string): string {
+  return `/api/publish/session/${encodeURIComponent(id)}`;
+}
+
+export const publishSessionPath = () => "/api/publish/session";
+
+export function sessionCollectionPreview(id: string): Promise<CollectionPreview> {
+  return api<CollectionPreview>(sessionPreviewPath(id));
+}
+
+export function sessionPublicationStatus(id: string): Promise<PublicationStatus> {
+  return api<PublicationStatus>(sessionPublicationStatusPath(id));
+}
+
+export function publishSession(
+  sessionId: string,
+  postIds: string[],
+  title?: string,
+): Promise<PublishSessionResult> {
+  return api<PublishSessionResult>(publishSessionPath(), {
+    method: "POST",
+    body: JSON.stringify(
+      title === undefined ? { sessionId, postIds } : { sessionId, postIds, title },
+    ),
+  });
+}
+
+export function publishSessionErrorMessage(err: unknown): string {
+  return serverErrorMessage(err, "Couldn't publish this session");
 }

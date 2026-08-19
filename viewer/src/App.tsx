@@ -7,8 +7,13 @@ import {
   isReadonly,
   layoutMode,
   publicReadMode,
+  NO_DESTINATION,
+  type PublicationStatus,
+  type PublishDestination,
+  publishDestination,
   relTime,
   sessionLabel,
+  sessionPublicationStatus,
   type Post,
   type SessionRow,
 } from "./api.ts";
@@ -16,6 +21,7 @@ import { host, isShadow, navHostEl, root, SLOTS } from "./host.ts";
 import { applyFrameHeight, Card, cardForPost, frameForSource } from "./Card.tsx";
 import { ConnectInstructions } from "./Connect.tsx";
 import { renderNotes } from "./notes.ts";
+import { PublishSessionDialog } from "./PublishSessionDialog.tsx";
 import { SessionTimeline } from "./SessionTimeline.tsx";
 import { StreamSkeleton } from "./Skeleton.tsx";
 import {
@@ -666,6 +672,9 @@ function SessionView() {
           {current() ? `${current()!.agent} · started ${relTime(current()!.createdAt)}` : ""}
         </span>
         <span class="head-sp"></span>
+        <Show when={!isReadonly() && current()}>
+          {(session) => <PublishSessionAction sessionId={session().id} />}
+        </Show>
         <ViewToggle />
         {/* Host-overridable region (SLOTS.sessionActions): session-scoped controls
             an embedder projects beside the toggle (e.g. cloud "Share"). Empty
@@ -694,6 +703,65 @@ function SessionView() {
         </Show>
       </div>
     </div>
+  );
+}
+
+// The session header's publish affordance: the entry point to the mandatory
+// confirmation view. It is offered even where this workspace publishes nowhere —
+// disabled, carrying the same explanation the card share menu gives — so the
+// capability stays discoverable rather than silently absent.
+function PublishSessionAction(props: { sessionId: string }) {
+  const [destination, setDestination] = createSignal<PublishDestination | null>(null);
+  const [publication, setPublication] = createSignal<PublicationStatus | null>(null);
+  const [open, setOpen] = createSignal(false);
+
+  // One shared destination answer per page (see api.ts); the session's own
+  // publication is asked for only once there is somewhere to publish to, and is
+  // re-asked whenever the selected session changes.
+  createEffect(() => {
+    const sessionId = props.sessionId;
+    setPublication(null);
+    publishDestination()
+      .then((d) => {
+        setDestination(d);
+        if (!d.configured) return;
+        sessionPublicationStatus(sessionId)
+          .then((status) => {
+            // A slow answer for a session the user already left must not label
+            // the button for the one now on screen.
+            if (props.sessionId === sessionId) setPublication(status);
+          })
+          .catch(() => {
+            // Unknown status just leaves the button on its first-publish label.
+          });
+      })
+      .catch(() => {
+        // Same: opening the dialog reports a real failure.
+      });
+  });
+
+  const usable = () => !!destination()?.configured;
+
+  return (
+    <>
+      <button
+        class="publish-session"
+        type="button"
+        disabled={!usable()}
+        title={destination() && !usable() ? NO_DESTINATION : undefined}
+        onClick={() => usable() && setOpen(true)}
+      >
+        {publication()?.published ? "Update publication" : "Publish session…"}
+      </button>
+      <Show when={open()}>
+        <PublishSessionDialog
+          sessionId={props.sessionId}
+          publication={publication()}
+          onClose={() => setOpen(false)}
+          onPublished={setPublication}
+        />
+      </Show>
+    </>
   );
 }
 
