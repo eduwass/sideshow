@@ -3,12 +3,14 @@ import { test } from "node:test";
 import { createSqliteStorage } from "../server/sqliteStorage.ts";
 import { SqlStore } from "../server/sqlStore.ts";
 import { htmlSurface, type SqlStorage } from "../server/types.ts";
+import { runPublicationStoreContract } from "./publicationStoreContract.ts";
 import { runStoreContract } from "./storeContract.ts";
 
 // Runs the shared store contract against SqlStore on node:sqlite (:memory:) —
 // the same adapter the local server uses on disk, so the contract exercises the
 // real Node SQLite path rather than a bespoke shim.
 runStoreContract("SqlStore", () => new SqlStore(createSqliteStorage()));
+runPublicationStoreContract("SqlStore", () => new SqlStore(createSqliteStorage()));
 
 const hotPathIndexes = {
   sideshow_assets_session_idx: ["sessionId"],
@@ -18,6 +20,33 @@ const hotPathIndexes = {
   sideshow_posts_session_created_at_idx: ["sessionId", "createdAt"],
   sideshow_posts_updated_at_idx: ["updatedAt"],
 } as const;
+
+// The publication tables live in the same database behind SqlPublicationStore,
+// so their indexes share the `sideshow_` prefix and show up in the same scan.
+const publicationIndexes = {
+  sideshow_external_feedback_link_idx: ["shareLinkId", "createdAt"],
+  sideshow_external_feedback_publication_idx: ["publicationId", "createdAt"],
+  sideshow_open_events_at_idx: ["at"],
+  sideshow_open_events_link_at_idx: ["shareLinkId", "at"],
+  sideshow_share_links_publication_idx: ["publicationId", "createdAt"],
+  sideshow_share_links_slug_idx: ["slug"],
+  sideshow_snapshot_assets_asset_idx: ["assetId"],
+  sideshow_snapshots_publication_idx: ["publicationId", "revision"],
+} as const;
+
+const sideshowIndexNames = (storage: SqlStorage) =>
+  storage
+    .exec(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'sideshow_%' ORDER BY name",
+    )
+    .toArray()
+    .map((row) => row.name);
+
+const indexColumns = (storage: SqlStorage, name: string) =>
+  storage
+    .exec(`SELECT name FROM pragma_index_info('${name}') ORDER BY seqno`)
+    .toArray()
+    .map((row) => row.name);
 
 test("SqlStore adds hot-path indexes to existing workspaces idempotently", () => {
   const storage = createSqliteStorage();
@@ -29,22 +58,73 @@ test("SqlStore adds hot-path indexes to existing workspaces idempotently", () =>
   new SqlStore(storage);
   new SqlStore(storage);
 
-  const indexes = storage
-    .exec(
-      "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name LIKE 'sideshow_%' ORDER BY name",
-    )
-    .toArray();
   assert.deepEqual(
-    indexes.map((row) => row.name),
-    Object.keys(hotPathIndexes),
+    sideshowIndexNames(storage),
+    [...Object.keys(hotPathIndexes), ...Object.keys(publicationIndexes)].sort(),
   );
   for (const [name, columns] of Object.entries(hotPathIndexes)) {
-    const actual = storage
-      .exec(`SELECT name FROM pragma_index_info('${name}') ORDER BY seqno`)
-      .toArray()
-      .map((row) => row.name);
-    assert.deepEqual(actual, columns, `${name} column order`);
+    assert.deepEqual(indexColumns(storage, name), columns, `${name} column order`);
   }
+});
+
+test("SqlStore migrates the publication schema in place idempotently", async () => {
+  const storage = createSqliteStorage();
+
+  // Model a database created by an older release, before publications existed.
+  const legacy = new SqlStore(storage);
+  const session = await legacy.createSession({ agent: "pi" });
+  const post = await legacy.createPost({
+    sessionId: session.id,
+    title: "Mockup",
+    surfaces: [htmlSurface("<p>hi</p>")],
+  });
+  assert.ok(post);
+  for (const name of Object.keys(publicationIndexes)) storage.exec(`DROP INDEX ${name}`);
+  for (const table of [
+    "external_feedback",
+    "open_visitors",
+    "open_aggregates",
+    "open_events",
+    "share_links",
+    "snapshot_assets",
+    "snapshots",
+    "publications",
+  ]) {
+    storage.exec(`DROP TABLE ${table}`);
+  }
+
+  // Re-opening the same storage rebuilds the publication schema, and doing it
+  // repeatedly is a no-op — a deployed Durable Object can never be reset.
+  const store = new SqlStore(storage);
+  const publication = await store.publications.createPublication({ kind: "post", title: "Shared" });
+  const snapshot = await store.publications.createSnapshot({
+    publicationId: publication.id,
+    items: [{ postId: post.id, title: post.title, version: post.version, surfaces: post.surfaces }],
+    assetIds: ["asset-1"],
+  });
+  assert.ok(snapshot);
+  new SqlStore(storage);
+  new SqlStore(storage);
+
+  assert.deepEqual(
+    sideshowIndexNames(storage),
+    [...Object.keys(hotPathIndexes), ...Object.keys(publicationIndexes)].sort(),
+  );
+  for (const [name, columns] of Object.entries(publicationIndexes)) {
+    assert.deepEqual(indexColumns(storage, name), columns, `${name} column order`);
+  }
+
+  // Nothing was dropped or rewritten by the repeated migrations.
+  const reopened = new SqlStore(storage);
+  assert.deepEqual(await reopened.publications.getPublication(publication.id), {
+    ...publication,
+    currentSnapshotId: snapshot.id,
+    updatedAt: snapshot.createdAt,
+  });
+  assert.deepEqual(await reopened.publications.getSnapshot(snapshot.id), snapshot);
+  assert.equal(await reopened.publications.isSnapshotAsset("asset-1"), true);
+  assert.deepEqual(await reopened.getPost(post.id), post);
+  assert.deepEqual(await reopened.listSessions(), [await reopened.getSession(session.id)]);
 });
 
 test("SqlStore hot queries use their covering or ordering indexes", () => {
