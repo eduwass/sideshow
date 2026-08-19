@@ -2027,6 +2027,13 @@ iframe {
   body {
     -webkit-tap-highlight-color: transparent;
   }
+  body.nav-open {
+    background: linear-gradient(
+      to right,
+      var(--panel) 0 min(280px, 84vw),
+      color-mix(in srgb, var(--bg) 65%, black) min(280px, 84vw) 100%
+    );
+  }
   input:not([type="checkbox"]):not([type="radio"]),
   textarea,
   select {
