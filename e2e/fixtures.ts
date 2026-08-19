@@ -161,6 +161,15 @@ export async function serveEmbedBundle(page: Page) {
 }
 
 export async function expectIframesNoHorizontalOverflow(page: Page, container: Locator) {
+  // Surface iframes are `loading="lazy"`, so on a tall card at a phone
+  // viewport the ones below the fold never navigate and would measure as
+  // "missing" forever. Bring each into view first — which is what a reader
+  // does — so the assertion covers every surface rather than only the ones
+  // that happened to be on screen.
+  const frames = container.locator("iframe");
+  for (let i = 0; i < (await frames.count()); i++) {
+    await frames.nth(i).scrollIntoViewIfNeeded();
+  }
   const frameUrls = await container
     .locator("iframe")
     .evaluateAll((frames) => frames.map((frame) => (frame as HTMLIFrameElement).src));
