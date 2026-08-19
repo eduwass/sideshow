@@ -1,16 +1,22 @@
-import { createEffect, createSignal, For, type JSX, on, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, Index, type JSX, on, onCleanup, Show } from "solid-js";
 import {
   apiText,
   canScreenshot,
+  type PublicationStatus,
+  publicationStatus,
   postImageLink,
   postLink,
   postMarkdownPath,
   type Post,
+  type PublishDestination,
+  publishDestination,
+  publishErrorMessage,
+  publishPost,
   type ViewerPost,
 } from "./api.ts";
 import { writeClipboard } from "./clipboard.ts";
 import { root } from "./host.ts";
-import { ImageIcon, LinkIcon, MarkdownIcon, OpenIcon, ShareIcon } from "./icons.tsx";
+import { GlobeIcon, ImageIcon, LinkIcon, MarkdownIcon, OpenIcon, ShareIcon } from "./icons.tsx";
 import { toast } from "./state.ts";
 
 // The card's single "take this elsewhere" control: one labelled button opening a
@@ -32,13 +38,19 @@ const VIEWPORT_PAD = 8;
 // before it can be measured, so the flip decision uses this estimate.
 const MENU_HEIGHT = (rows: number) => rows * 32 + 9 + 8;
 
+const NO_DESTINATION = "This workspace has no publication destination configured. See the README.";
+
 type MenuAction = {
   key: string;
   label: string;
   icon: () => JSX.Element;
   // A link row renders as an anchor so middle-click and cmd-click still work.
   href?: string;
+  rel?: string;
   run?: () => void | Promise<void>;
+  // Inert with no explanation — a row waiting on the state that decides whether
+  // it is usable at all. `disabledReason` is the explained flavour.
+  disabled?: boolean;
   disabledReason?: string;
   separatorBefore?: boolean;
 };
@@ -53,6 +65,12 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
   // clicked — and hand the promise (not an awaited string) to the clipboard, so
   // a slow fetch still copies inside the user gesture. See clipboard.ts.
   let markdown: Promise<string> | null = null;
+  // Whether this workspace publishes anywhere is fetched once per page (see
+  // api.ts); whether THIS post already has a publication is per-post, so it is
+  // refreshed each time the menu opens — another agent may have published it.
+  const [destination, setDestination] = createSignal<PublishDestination | null>(null);
+  const [publication, setPublication] = createSignal<PublicationStatus | null>(null);
+  const [publishing, setPublishing] = createSignal(false);
 
   const link = () => postLink(props.post.id);
 
@@ -103,9 +121,69 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
               "Saving the first surface as an image needs Cloudflare Browser Rendering, which this server doesn't have. See the README.",
           }),
     },
+    {
+      key: "publish",
+      label: publishing()
+        ? "Publishing…"
+        : publication()?.published
+          ? "Update publication"
+          : "Publish to the web…",
+      icon: GlobeIcon,
+      separatorBefore: true,
+      // Inert until the destination answers (nothing to say yet), then either
+      // usable or explained; and inert again for as long as a publish is in
+      // flight, so the row cannot fire twice.
+      ...(destination()?.configured
+        ? { run: doPublish, disabled: publishing() }
+        : destination()
+          ? { disabledReason: NO_DESTINATION }
+          : { disabled: true }),
+    },
+    ...(publication()?.url
+      ? [
+          {
+            key: "publication",
+            label: "Open publication",
+            icon: OpenIcon,
+            href: publication()!.url,
+            rel: "noopener noreferrer",
+          } satisfies MenuAction,
+        ]
+      : []),
   ];
 
   const fetchMarkdown = () => (markdown ??= apiText(postMarkdownPath(props.post.id)));
+
+  const doPublish = async () => {
+    if (publishing()) return;
+    setPublishing(true);
+    try {
+      const result = await publishPost(props.post.id);
+      setPublication({
+        configured: true,
+        published: true,
+        publicationId: result.publicationId,
+        url: result.url,
+        revision: result.revision,
+      });
+      const copied = await writeClipboard(result.url);
+      close();
+      toast(
+        result.updated
+          ? copied
+            ? "Publication updated — link copied"
+            : "Publication updated"
+          : copied
+            ? "Published — link copied"
+            : "Published",
+      );
+    } catch (err) {
+      close();
+      toast(publishErrorMessage(err));
+    } finally {
+      setPublishing(false);
+    }
+  };
 
   const items = () =>
     Array.from(menu?.querySelectorAll<HTMLElement>("[role='menuitem']:not([disabled])") ?? []);
@@ -135,6 +213,22 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
       // A failed prefetch is not worth a toast — the row reports it if used.
       markdown = null;
     });
+    // The destination promise is shared across every card, so this is one
+    // request per page, not one per menu open. Only ask about this post's
+    // publication once we know there is somewhere to publish to.
+    publishDestination()
+      .then((d) => {
+        setDestination(d);
+        if (!d.configured) return;
+        publicationStatus(props.post.id)
+          .then(setPublication)
+          .catch(() => {
+            // Unknown status just leaves the row on its first-publish label.
+          });
+      })
+      .catch(() => {
+        // Same: the row reports a real failure when it is used.
+      });
     if (focusFirst) queueMicrotask(() => focusItem(0));
   };
 
@@ -232,26 +326,29 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
           style={{ left: `${at().left}px`, top: `${at().top}px` }}
           onKeyDown={onMenuKeyDown}
         >
-          <For each={actions()}>
+          {/* Indexed, not keyed: a row's label and disabled state change as the
+              publish state resolves, and rebuilding the row for that would throw
+              away keyboard focus mid-menu. */}
+          <Index each={actions()}>
             {(action) => (
               <>
-                <Show when={action.separatorBefore}>
+                <Show when={action().separatorBefore}>
                   <div class="share-sep"></div>
                 </Show>
                 <Show
-                  when={action.href}
+                  when={action().href}
                   keyed
                   fallback={
                     <button
                       class="share-item"
                       role="menuitem"
                       type="button"
-                      disabled={!!action.disabledReason}
-                      title={action.disabledReason}
-                      onClick={() => action.run?.()}
+                      disabled={action().disabled || !!action().disabledReason}
+                      title={action().disabledReason}
+                      onClick={() => action().run?.()}
                     >
-                      {action.icon()}
-                      {action.label}
+                      {action().icon()}
+                      {action().label}
                     </button>
                   }
                 >
@@ -261,17 +358,17 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
                       role="menuitem"
                       href={href}
                       target="_blank"
-                      rel="noopener"
+                      rel={action().rel ?? "noopener"}
                       onClick={() => close(false)}
                     >
-                      {action.icon()}
-                      {action.label}
+                      {action().icon()}
+                      {action().label}
                     </a>
                   )}
                 </Show>
               </>
             )}
-          </For>
+          </Index>
         </div>
       </Show>
     </>
