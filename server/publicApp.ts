@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getCookie, setCookie } from "hono/cookie";
 import { decodeBase64 } from "./base64.ts";
-import { hashPassword, timingSafeEqual, verifyPassword } from "./passwords.ts";
+import { hashPassword, MAX_PASSWORD_BYTES, timingSafeEqual, verifyPassword } from "./passwords.ts";
 import { validateSurfaces } from "./postSurfaces.ts";
 import { renderPasswordPage, renderPublicationPage } from "./publicationPage.ts";
 import {
@@ -51,6 +51,8 @@ export const MAX_PUBLIC_BODY_BYTES = 64 * 1024;
 export const MAX_FEEDBACK_NOTE_LENGTH = 4000;
 export const MAX_FEEDBACK_NAME_LENGTH = 120;
 export const MAX_FEEDBACK_QUOTE_LENGTH = 2000;
+// Owner-only free text on a share link. Bounded like every other stored string.
+export const MAX_RECIPIENT_LABEL_LENGTH = 200;
 
 // Password guessing and feedback flooding are the two abusable public writes.
 const UNLOCK_LIMIT = 10;
@@ -199,6 +201,14 @@ export function normalizeExpiry(raw: unknown): string | null | false {
   const at = Date.parse(raw);
   if (!Number.isFinite(at)) return false;
   return new Date(at).toISOString();
+}
+
+// scrypt is memory-hard per call, so passwords.ts caps its input and throws
+// above it. Decide that at the edge instead, so an oversize password is a 400
+// rather than an unhandled 500. `false` means "present but too long".
+export async function normalizePassword(raw: string): Promise<string | false> {
+  if (encoder.encode(raw).length > MAX_PASSWORD_BYTES) return false;
+  return hashPassword(raw);
 }
 
 const trimmed = (value: unknown, max: number): string =>
@@ -388,18 +398,103 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     }
     const expiresAt = normalizeExpiry(body.expiresAt);
     if (expiresAt === false) return c.json({ error: "invalid expiry" }, 400);
-    const passwordHash =
-      typeof body.password === "string" && body.password ? await hashPassword(body.password) : null;
+    let passwordHash: string | null = null;
+    if (typeof body.password === "string" && body.password) {
+      const hashed = await normalizePassword(body.password);
+      if (hashed === false) return c.json({ error: "password too long" }, 400);
+      passwordHash = hashed;
+    }
     const link = await publications.createShareLink({
       publicationId,
       ...(slug !== undefined && { slug, custom: true }),
-      recipientLabel: typeof body.recipientLabel === "string" ? body.recipientLabel : null,
+      recipientLabel:
+        typeof body.recipientLabel === "string"
+          ? body.recipientLabel.slice(0, MAX_RECIPIENT_LABEL_LENGTH)
+          : null,
       passwordHash,
       expiresAt,
       trackOpens: body.trackOpens !== false,
     });
     if (!link) return c.json({ error: "that link address is already taken" }, 409);
     return c.json(ownerLinkView(link), 201);
+  });
+
+  app.get("/api/owner/links/:id", async (c) => {
+    const link = await publications.getShareLink(c.req.param("id"));
+    if (!link) return c.json({ error: "not found" }, 404);
+    return c.json(ownerLinkView(link));
+  });
+
+  // Update one link's access controls. `password: null` clears it, a string
+  // sets a fresh hash (which also invalidates every outstanding unlock cookie,
+  // because those are bound to the hash). `revoked` is the fail-closed kill
+  // switch; DELETE below is the permanent removal.
+  app.patch("/api/owner/links/:id", async (c) => {
+    const id = c.req.param("id");
+    const current = await publications.getShareLink(id);
+    if (!current) return c.json({ error: "not found" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const patch: Parameters<typeof publications.updateShareLink>[1] = {};
+    if ("recipientLabel" in body) {
+      patch.recipientLabel =
+        typeof body.recipientLabel === "string"
+          ? body.recipientLabel.slice(0, MAX_RECIPIENT_LABEL_LENGTH)
+          : null;
+    }
+    if ("password" in body) {
+      if (body.password === null || body.password === "") patch.passwordHash = null;
+      else if (typeof body.password === "string") {
+        const hashed = await normalizePassword(body.password);
+        if (hashed === false) return c.json({ error: "password too long" }, 400);
+        patch.passwordHash = hashed;
+      } else return c.json({ error: "invalid password" }, 400);
+    }
+    if ("expiresAt" in body) {
+      const expiresAt = normalizeExpiry(body.expiresAt);
+      if (expiresAt === false) return c.json({ error: "invalid expiry" }, 400);
+      patch.expiresAt = expiresAt;
+    }
+    if ("trackOpens" in body) patch.trackOpens = body.trackOpens !== false;
+    if ("revoked" in body) {
+      patch.revokedAt = body.revoked ? (current.revokedAt ?? new Date().toISOString()) : null;
+    }
+    const updated = await publications.updateShareLink(id, patch);
+    if (!updated) return c.json({ error: "not found" }, 404);
+    return c.json(ownerLinkView(updated));
+  });
+
+  // A duplicate carries the same access SETTINGS (so the same password still
+  // works and the same expiry applies) but is a wholly separate capability: its
+  // own slug, its own analytics, its own feedback, and its own revocation — so
+  // cutting one recipient off never touches another.
+  app.post("/api/owner/links/:id/duplicate", async (c) => {
+    const source = await publications.getShareLink(c.req.param("id"));
+    if (!source) return c.json({ error: "not found" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    let slug: string | undefined;
+    if (body.slug !== undefined) {
+      if (!isValidCustomSlug(body.slug)) return c.json({ error: "invalid slug" }, 400);
+      slug = body.slug;
+    }
+    const copy = await publications.createShareLink({
+      publicationId: source.publicationId,
+      ...(slug !== undefined && { slug, custom: true }),
+      recipientLabel:
+        typeof body.recipientLabel === "string"
+          ? body.recipientLabel.slice(0, MAX_RECIPIENT_LABEL_LENGTH)
+          : null,
+      passwordHash: source.passwordHash,
+      expiresAt: source.expiresAt,
+      trackOpens: source.trackOpens,
+    });
+    if (!copy) return c.json({ error: "that link address is already taken" }, 409);
+    return c.json(ownerLinkView(copy), 201);
+  });
+
+  app.delete("/api/owner/links/:id", async (c) => {
+    const removed = await publications.removeShareLink(c.req.param("id"));
+    if (!removed) return c.json({ error: "not found" }, 404);
+    return c.body(null, 204);
   });
 
   // Asset bytes for a publication. Exempt from the small public body cap above

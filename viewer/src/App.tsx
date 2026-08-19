@@ -1,4 +1,14 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  onCleanup,
+  onMount,
+  Show,
+  Switch,
+} from "solid-js";
 import { AgentMark } from "./agentMarks.tsx";
 import {
   api,
@@ -21,6 +31,7 @@ import { host, isShadow, navHostEl, root, SLOTS } from "./host.ts";
 import { applyFrameHeight, Card, cardForPost, frameForSource } from "./Card.tsx";
 import { ConnectInstructions } from "./Connect.tsx";
 import { renderNotes } from "./notes.ts";
+import { Publications } from "./Publications.tsx";
 import { PublishSessionDialog } from "./PublishSessionDialog.tsx";
 import { SessionTimeline } from "./SessionTimeline.tsx";
 import { StreamSkeleton } from "./Skeleton.tsx";
@@ -75,14 +86,23 @@ import {
   viewMode,
 } from "./state.ts";
 
-function isConnectPath() {
+// The engine's two full-page views. The host Route only carries a session/post,
+// so — exactly as the connect page has always done — these are read off the
+// path directly, in this one helper, rather than through the router. An
+// embedding host takes the whole pane over via SLOTS.main instead, so neither
+// view ever renders inside a shadow root.
+type FullPageView = "connect" | "publications" | null;
+
+function fullPageFromPath(): FullPageView {
   const basePath = window.__SIDESHOW_BASE_PATH__ ?? "";
   const rest = location.pathname.startsWith(basePath)
     ? location.pathname.slice(basePath.length)
     : location.pathname;
-  return rest === "/connect";
+  if (rest === "/connect") return "connect";
+  if (rest === "/publications") return "publications";
+  return null;
 }
-const [connectPath, setConnectPath] = createSignal(isConnectPath());
+const [fullPage, setFullPage] = createSignal<FullPageView>(fullPageFromPath());
 
 // Stream-only layout: no sidebar, session list, or session chrome — just the
 // current session's stream. Driven by the host's `layout` (cloud embed) or the
@@ -102,7 +122,7 @@ function Brand() {
       type="button"
       aria-label="sideshow — home"
       onClick={() => {
-        setConnectPath(false);
+        setFullPage(null);
         goHome();
       }}
     >
@@ -202,14 +222,14 @@ export default function App() {
     // Routing: the host tells us when the route changes (back/forward).
     onCleanup(
       host().router.subscribe((route) => {
-        setConnectPath(isConnectPath());
+        setFullPage(fullPageFromPath());
         applyRoute(route);
       }),
     );
   });
 
   createEffect(() => {
-    if (selected()) setConnectPath(false);
+    if (selected()) setFullPage(null);
   });
 
   // unseen activity badges the tab title — self-hosted only; an embedding host
@@ -334,6 +354,7 @@ export default function App() {
                     </a>{" "}
                     <Show when={!isReadonly()}>
                       &nbsp;·&nbsp; <a href={appPath("/connect")}>connect agent</a>
+                      &nbsp;·&nbsp; <PublicationsLink />
                     </Show>
                   </slot>
                 </div>
@@ -348,8 +369,7 @@ export default function App() {
               workspace; an embedder projects a `slot="ss:main"` child to take over the
               pane (e.g. a cloud Settings page) while the sidebar stays. */}
               <slot name={SLOTS.main}>
-                <Show
-                  when={connectPath()}
+                <Switch
                   fallback={
                     <>
                       <Show when={!streamMode()}>
@@ -359,8 +379,13 @@ export default function App() {
                     </>
                   }
                 >
-                  <ConnectPage />
-                </Show>
+                  <Match when={fullPage() === "connect"}>
+                    <ConnectPage />
+                  </Match>
+                  <Match when={fullPage() === "publications"}>
+                    <Publications />
+                  </Match>
+                </Switch>
               </slot>
             </main>
           </div>
@@ -583,13 +608,13 @@ function SessionItem(props: { session: SessionRow }) {
       tabIndex={0}
       aria-current={props.session.id === selected() ? "true" : undefined}
       onClick={() => {
-        setConnectPath(false);
+        setFullPage(null);
         select(props.session.id);
       }}
       onKeyDown={(e) => {
         if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
-          setConnectPath(false);
+          setFullPage(null);
           select(props.session.id);
         }
       }}
@@ -856,6 +881,56 @@ function Onboard() {
         </Show>
       </slot>
     </div>
+  );
+}
+
+// The publications dashboard entry. The dashboard reads and writes through the
+// destination proxy, every route of which answers 503 without a configured
+// destination, so the entry is offered but disabled — carrying the same
+// explanation the card share menu gives — rather than silently absent.
+function PublicationsLink() {
+  const [destination, setDestination] = createSignal<PublishDestination | null>(null);
+  onMount(() => {
+    publishDestination()
+      .then(setDestination)
+      .catch(() => {
+        // An unknown destination leaves the entry disabled, which is the safe way
+        // to be wrong: nothing there can work without one.
+      });
+  });
+  const usable = () => !!destination()?.configured;
+  return (
+    <Show
+      when={usable()}
+      fallback={
+        <button
+          class="foot-link"
+          type="button"
+          disabled
+          title={destination() ? NO_DESTINATION : undefined}
+        >
+          publications
+        </button>
+      }
+    >
+      <a
+        href={appPath("/publications")}
+        onClick={(e) => {
+          // A real anchor, so middle-click / copy-link / open-in-new-tab all
+          // behave; a plain left click switches view in place instead of
+          // reloading the whole workspace.
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          history.pushState(null, "", appPath("/publications"));
+          setFullPage("publications");
+          // At phone width this link lives in the drawer, which would otherwise
+          // stay open over the dashboard it just opened.
+          setNavOpen(false);
+        }}
+      >
+        publications
+      </a>
+    </Show>
   );
 }
 

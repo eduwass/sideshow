@@ -217,8 +217,12 @@ export async function enterStandalone(id: string) {
   if (post) setStandaloneInternal(post);
 }
 
-function isConnectRoute(): boolean {
-  return location.pathname === appPath("/connect");
+// The engine's full-page views (see App.tsx). Landing on one must not
+// auto-open a session behind it — the view IS what the URL asked for.
+function isFullPageRoute(): boolean {
+  return (
+    location.pathname === appPath("/connect") || location.pathname === appPath("/publications")
+  );
 }
 
 export async function refreshSessions(targetPostId?: string | null) {
@@ -266,7 +270,7 @@ export async function refreshSessions(targetPostId?: string | null) {
     const route = host().router.get();
     const lastId = localStorage.getItem(LAST_SESSION_KEY);
     const fallback =
-      host().homeView || isConnectRoute()
+      host().homeView || isFullPageRoute()
         ? null
         : (lastId && sessions.some((s) => s.id === lastId) && lastId) || sessions[0].id;
     const target =
