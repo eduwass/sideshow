@@ -89,7 +89,22 @@ jobs:
       - run: npm install -g npm@11.17.0
       - run: npm ci --ignore-scripts
       - run: npm run security:audit
-      - run: npx playwright install --with-deps chromium webkit
+      # `--with-deps` shells out to apt, which intermittently blocks forever on
+      # the runner image's unattended-upgrades holding the dpkg lock — the job
+      # then sits in this step for 40+ minutes instead of failing. Stop that
+      # service first, split the apt half from the browser download so a hang is
+      # attributable, and bound both so a stuck lock fails fast enough to retry.
+      - name: Release the apt lock
+        run: |
+          sudo systemctl stop unattended-upgrades.service || true
+          sudo systemctl kill --kill-who=all apt-daily.service || true
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer || true
+      - name: Install browser system dependencies
+        timeout-minutes: 8
+        run: npx playwright install-deps chromium webkit
+      - name: Install browsers
+        timeout-minutes: 8
+        run: npx playwright install chromium webkit
       - run: npm run test:e2e
 
   # Windows uses entirely separate code paths in the CLI (PowerShell process
