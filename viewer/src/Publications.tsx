@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import {
   createShareLink,
   CUSTOM_SLUG_WARNING,
@@ -21,6 +21,15 @@ import {
   updateShareLink,
 } from "./api.ts";
 import { writeClipboard } from "./clipboard.ts";
+import {
+  avatarPreviewUrl,
+  type IdentityForm,
+  identityEnabled,
+  identityError,
+  identityForm,
+  identityFromForm,
+  identityLinkText,
+} from "./identity.ts";
 import { toast } from "./state.ts";
 
 // The owner dashboard for everything that has been put on the public web from
@@ -275,6 +284,13 @@ function PublicationDetailView(props: { id: string; fallbackOrigin: string; onBa
               </div>
             </section>
 
+            <IdentityHeaderSection
+              publicationId={props.id}
+              identity={data().publication.identity}
+              origin={origin()}
+              run={run}
+            />
+
             <section class="settings-sec">
               <h2>Share links</h2>
               <Show
@@ -407,6 +423,194 @@ function PublicationDetailView(props: { id: string; fallbackOrigin: string; onBa
 }
 
 type Run = (action: () => Promise<unknown>, success: string, fallback: string) => Promise<boolean>;
+
+// The optional publisher identity strip on the public page. It is off by
+// default and stays that way until the owner turns it on: the neutral page is
+// the product, and this is the one concession to "who published this".
+//
+// The avatar is an asset id rather than an upload, deliberately — the private
+// viewer has no owner asset-upload route to the public service, so this
+// references an image the publication already carries, and the preview is how
+// the owner finds out whether the id was right.
+function IdentityHeaderSection(props: {
+  publicationId: string;
+  identity: Publication["identity"];
+  origin: string;
+  run: Run;
+}) {
+  const [enabled, setEnabled] = createSignal(identityEnabled(props.identity));
+  const [form, setForm] = createSignal<IdentityForm>(identityForm(props.identity));
+  const [saving, setSaving] = createSignal(false);
+  const [showError, setShowError] = createSignal(false);
+  const [avatarBroken, setAvatarBroken] = createSignal(false);
+
+  // Re-sync only when the SAVED identity actually changes, so a refetch caused
+  // by some other write on this page (a title save) can't wipe an edit in
+  // progress here.
+  let saved = JSON.stringify(props.identity ?? null);
+  createEffect(() => {
+    const next = JSON.stringify(props.identity ?? null);
+    if (next === saved) return;
+    saved = next;
+    setEnabled(identityEnabled(props.identity));
+    setForm(identityForm(props.identity));
+    setShowError(false);
+  });
+
+  const field = (key: keyof IdentityForm, value: string) => setForm({ ...form(), [key]: value });
+
+  const error = createMemo(() => identityError(form()));
+  const avatarUrl = createMemo(() => avatarPreviewUrl(props.origin, form().avatarAssetId));
+
+  const save = async () => {
+    if (saving()) return;
+    if (error()) {
+      setShowError(true);
+      return;
+    }
+    setSaving(true);
+    await props.run(
+      () => updatePublication(props.publicationId, { identity: identityFromForm(form()) }),
+      "Identity header saved",
+      "Couldn't save the identity header",
+    );
+    setSaving(false);
+  };
+
+  const turnOff = async () => {
+    setEnabled(false);
+    setShowError(false);
+    if (!props.identity) return;
+    setSaving(true);
+    await props.run(
+      () => updatePublication(props.publicationId, { identity: null }),
+      "Identity header removed",
+      "Couldn't remove the identity header",
+    );
+    setSaving(false);
+  };
+
+  return (
+    <section class="settings-sec">
+      <h2>Identity header</h2>
+      <p class="pubs-note">
+        Off by default. When it is on, readers see a small avatar, name and link above the
+        publication — nothing else about you is published.
+      </p>
+      <label class="pubs-check">
+        <input
+          type="checkbox"
+          checked={enabled()}
+          disabled={saving()}
+          onChange={(e) => {
+            if (e.currentTarget.checked) setEnabled(true);
+            else void turnOff();
+          }}
+        />
+        Show a publisher identity on this publication
+      </label>
+      <Show when={enabled()}>
+        <form
+          class="pubs-form"
+          aria-label="Identity header"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <label class="pubs-label">
+            Name (required)
+            <input
+              class="pubs-input"
+              type="text"
+              value={form().name}
+              placeholder="e.g. Ada Lovelace"
+              onInput={(e) => field("name", e.currentTarget.value)}
+            />
+          </label>
+          <label class="pubs-label">
+            Link URL (optional)
+            <input
+              class="pubs-input"
+              type="url"
+              value={form().linkUrl}
+              placeholder="https://example.com"
+              onInput={(e) => field("linkUrl", e.currentTarget.value)}
+            />
+          </label>
+          <label class="pubs-label">
+            Link label (optional)
+            <input
+              class="pubs-input"
+              type="text"
+              value={form().linkLabel}
+              placeholder="Defaults to the link's host"
+              onInput={(e) => field("linkLabel", e.currentTarget.value)}
+            />
+          </label>
+          <label class="pubs-label">
+            Avatar asset id (optional)
+            <input
+              class="pubs-input"
+              type="text"
+              value={form().avatarAssetId}
+              placeholder="an asset already in this publication"
+              onInput={(e) => {
+                setAvatarBroken(false);
+                field("avatarAssetId", e.currentTarget.value);
+              }}
+            />
+          </label>
+          <p class="pubs-note">
+            The image has to be one this publication already carries — publish a post that includes
+            it, then paste its asset id here.
+          </p>
+
+          <p class="pubs-preview-label">Preview</p>
+          <div class="pubs-identity-preview">
+            <Show
+              when={avatarBroken() ? null : avatarUrl()}
+              fallback={<span class="pubs-identity-avatar placeholder" aria-hidden="true" />}
+            >
+              {(src) => (
+                <img
+                  class="pubs-identity-avatar"
+                  src={src()}
+                  alt=""
+                  onError={() => setAvatarBroken(true)}
+                />
+              )}
+            </Show>
+            <div>
+              <div class="pubs-identity-name">{form().name.trim() || "Your name"}</div>
+              <Show when={identityLinkText(form())}>
+                {(text) => <div class="pubs-identity-link">{text()}</div>}
+              </Show>
+            </div>
+          </div>
+          <Show when={avatarUrl() && avatarBroken()}>
+            <p class="pubs-note">
+              That asset id didn't load from {props.origin || "the publication"} — check the id.
+            </p>
+          </Show>
+
+          <Show when={showError() && error()}>
+            {(message) => (
+              <p class="pubs-error" role="alert">
+                {message()}
+              </p>
+            )}
+          </Show>
+          <div class="pubs-actions">
+            <button class="publish-btn primary" type="submit" disabled={saving()}>
+              Save identity
+            </button>
+          </div>
+        </form>
+      </Show>
+    </section>
+  );
+}
 
 const STATE_LABEL: Record<string, string> = {
   active: "Active",

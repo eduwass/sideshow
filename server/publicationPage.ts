@@ -24,7 +24,10 @@ export interface PublicationPageInput {
   nonce: string;
 }
 
-// A stable neutral palette: no brand hues, follows the reader's system scheme.
+// A stable neutral palette: no brand hues. It follows the reader's system
+// scheme by default, and a local override (stored on their device only) pins it
+// either way. The light values are the bare defaults so a reader with no
+// preference and no override still gets a complete palette.
 const PAGE_CSS = `
 :root{
   color-scheme: light dark;
@@ -32,8 +35,18 @@ const PAGE_CSS = `
   --muted:#6b6b73; --accent:#3a3a42; --radius:10px;
 }
 @media (prefers-color-scheme: dark){
-  :root{ --bg:#111114; --surface:#17171b; --border:#2b2b31; --text:#ececef; --muted:#9a9aa3; --accent:#d6d6dc; }
+  :root:not([data-scheme="light"]){ --bg:#111114; --surface:#17171b; --border:#2b2b31; --text:#ececef; --muted:#9a9aa3; --accent:#d6d6dc; }
 }
+:root[data-scheme="dark"]{ color-scheme: dark; --bg:#111114; --surface:#17171b; --border:#2b2b31; --text:#ececef; --muted:#9a9aa3; --accent:#d6d6dc; }
+:root[data-scheme="light"]{ color-scheme: light; }
+.scheme{position:fixed;top:12px;right:12px;z-index:2}
+.scheme button{
+  display:flex;align-items:center;justify-content:center;width:32px;height:32px;
+  border:1px solid var(--border);border-radius:8px;background:var(--surface);
+  color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;
+}
+.scheme button:hover{color:var(--text)}
+@media print{ .scheme{display:none} }
 *{box-sizing:border-box}
 body{
   margin:0; background:var(--bg); color:var(--text);
@@ -79,6 +92,46 @@ section.item > h2{font-size:17px;margin:0 0 12px;font-weight:600}
 const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: string) => `
 (function(){
   var frames = document.querySelectorAll('iframe[data-surface]');
+
+  // Light/dark. The default is the reader's system scheme; a local override is
+  // stored on their device only and never reaches the server. A sandboxed
+  // surface bakes its colours into the document it was served as, so switching
+  // has to RELOAD each frame with an explicit mode rather than restyle it.
+  var KEY = 'sideshow.scheme';
+  var root = document.documentElement;
+  function stored(){
+    try { return localStorage.getItem(KEY); } catch (e) { return null; }
+  }
+  function systemScheme(){
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+  }
+  function applyFrames(mode){
+    for (var i = 0; i < frames.length; i++) {
+      var f = frames[i];
+      var base = f.getAttribute('data-src') || f.getAttribute('src');
+      if (!base) continue;
+      f.setAttribute('data-src', base);
+      var next = base + (base.indexOf('?') < 0 ? '?' : '&') + 'mode=' + mode;
+      if (f.getAttribute('src') !== next) f.setAttribute('src', next);
+    }
+  }
+  function apply(scheme, reframe){
+    if (scheme) root.setAttribute('data-scheme', scheme);
+    else root.removeAttribute('data-scheme');
+    if (reframe) applyFrames(scheme || systemScheme());
+  }
+  apply(stored(), !!stored());
+  var toggle = document.getElementById('scheme-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', function(){
+      var next = (stored() || systemScheme()) === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem(KEY, next); } catch (e) {}
+      apply(next, true);
+    });
+  }
+
   window.addEventListener('message', function(e){
     var d = e.data;
     if (!d || d.__sideshow !== true) return;
@@ -191,9 +244,10 @@ export function renderPublicationPage(input: PublicationPageInput): string {
   return shell(
     input.title,
     input.nonce,
-    `<div class="wrap">${identityHeader(input.identity, base)}<h1>${escapeHtml(
-      input.title,
-    )}</h1>${contents}${items}</div>`,
+    `<div class="scheme"><button id="scheme-toggle" type="button" aria-label="Switch between light and dark">\u25d1</button></div>` +
+      `<div class="wrap">${identityHeader(input.identity, base)}<h1>${escapeHtml(
+        input.title,
+      )}</h1>${contents}${items}</div>`,
     PAGE_JS(input.slug, input.snapshot.id, input.trackOpens, base),
   );
 }
