@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import {
   ANALYTICS_DISCLAIMER,
+  appPath,
   ANALYTICS_RECENT_LIMIT,
   createShareLink,
   CUSTOM_SLUG_WARNING,
@@ -106,6 +107,13 @@ export function Publications() {
                 <p>
                   Everything this workspace has published to the web, and the share links that can
                   still open it.
+                </p>
+                <p>
+                  {/* A plain anchor: the inbox is its own full-page view, and
+                  the dashboard is where an owner goes looking for it. */}
+                  <a class="pubs-feedback-link" href={appPath("/feedback")}>
+                    Client feedback inbox
+                  </a>
                 </p>
               </header>
               <Show when={loadError()}>

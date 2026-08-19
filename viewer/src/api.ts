@@ -18,6 +18,9 @@ import type {
 } from "../../server/types.ts";
 import type { ViewerPost } from "../../server/apiViews.ts";
 import type {
+  ExternalAnchor,
+  ExternalFeedback,
+  FeedbackStatus,
   IdentityHeader,
   Publication,
   PublicationKind,
@@ -520,6 +523,105 @@ export function formatOpenAt(iso: string | null): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+// --- the external feedback inbox ---
+//
+// Client submissions arrive over a DELIBERATELY separate stream from the
+// trusted comment→agent channel (docs/adr/0003). Nothing here is delivered to
+// an agent: the inbox reads it, the owner reads it, and the only way it moves
+// on is the owner copying a prompt onto their own clipboard.
+
+export type { ExternalAnchor, ExternalFeedback, FeedbackStatus };
+
+// One submission plus the context needed to read it, as GET /api/feedback
+// sends it. `surfaceUrl` is served by the private origin and re-serves the
+// exact historical surface under a sandbox CSP header, so the browser never
+// holds the destination's token.
+export interface FeedbackEntry {
+  feedback: ExternalFeedback;
+  publicationTitle: string;
+  publicationId: string;
+  snapshotRevision: number;
+  itemTitle: string;
+  surfaceKind: string;
+  surfaceUrl: string;
+  recipientLabel: string | null;
+}
+
+export interface FeedbackInbox {
+  /** Unread across the whole workspace, regardless of the current filter. */
+  unread: number;
+  feedback: FeedbackEntry[];
+}
+
+export const FEEDBACK_STATUSES: FeedbackStatus[] = ["unread", "read", "resolved", "rejected"];
+
+export const feedbackPath = (status?: FeedbackStatus): string =>
+  status ? `/api/feedback?status=${encodeURIComponent(status)}` : "/api/feedback";
+
+export function feedbackStatusPath(id: string): string {
+  return `/api/feedback/${encodeURIComponent(id)}`;
+}
+
+export const feedbackPromptPath = () => "/api/feedback/prompt";
+
+export function listFeedback(status?: FeedbackStatus): Promise<FeedbackInbox> {
+  return api<FeedbackInbox>(feedbackPath(status));
+}
+
+export function setFeedbackStatus(id: string, status: FeedbackStatus): Promise<ExternalFeedback> {
+  return api<ExternalFeedback>(feedbackStatusPath(id), {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+// The clipboard prompt. The server builds the text; this only asks for it —
+// there is no route that hands it to an agent, by design.
+export function feedbackPromptFor(ids: string[]): Promise<{ prompt: string }> {
+  return api<{ prompt: string }>(feedbackPromptPath(), {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+// The frozen surface, addressed with the same theme/mode query a live card
+// uses, so a historical surface matches the workspace's current theme.
+export function feedbackSurfaceSrc(entry: FeedbackEntry, theme: string, mode: string): string {
+  const url = entry.surfaceUrl.includes("?") ? entry.surfaceUrl : `${entry.surfaceUrl}?`;
+  const sep = url.endsWith("?") ? "" : "&";
+  return `${url}${sep}theme=${encodeURIComponent(theme)}&mode=${encodeURIComponent(mode)}`;
+}
+
+// Said in the UI, not just in a doc: the trust boundary is only real if the
+// owner can see that copying is the only thing that happens.
+export const FEEDBACK_NO_AUTO_SEND =
+  "Nothing here is sent to an agent automatically — copying puts this text on your clipboard, and you choose what to do with it.";
+
+// What an owner is looking at when a submission is opened: the frozen revision,
+// not the live publication.
+export const FEEDBACK_HISTORICAL_NOTE =
+  "This is the frozen revision this comment was written against, not the live publication.";
+
+export function feedbackErrorMessage(err: unknown, fallback = "Couldn't load feedback"): string {
+  return serverErrorMessage(err, fallback);
+}
+
+/** A point anchor as the percentages a human can act on. */
+export function anchorPercent(anchor: ExternalAnchor): { x: number; y: number } | null {
+  return anchor.kind === "point"
+    ? { x: Math.round(anchor.x * 100), y: Math.round(anchor.y * 100) }
+    : null;
+}
+
+export function anchorLabel(anchor: ExternalAnchor): string {
+  const point = anchorPercent(anchor);
+  return point ? `Point at ${point.x}% across, ${point.y}% down` : "Highlighted text";
+}
+
+export function feedbackAuthor(feedback: ExternalFeedback): string {
+  return feedback.email ? `${feedback.name} <${feedback.email}>` : feedback.name;
 }
 
 // A share link's public address. The public service serves a publication at

@@ -78,4 +78,13 @@ export class DestinationClient {
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
+
+  /** Same call, for the routes that answer with a document rather than JSON. */
+  async requestText(path: string): Promise<string> {
+    const res = await this.fetchImpl(`${this.config.origin}${path}`, {
+      headers: { authorization: `Bearer ${this.config.token}` },
+    });
+    if (!res.ok) throw new DestinationError(res.status, `destination returned ${res.status}`);
+    return res.text();
+  }
 }

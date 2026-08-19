@@ -378,6 +378,58 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     return c.json(snapshot);
   });
 
+  // --- owner feedback inbox ---
+
+  app.get("/api/owner/feedback", async (c) => {
+    const status = c.req.query("status");
+    const query: Parameters<typeof publications.listFeedback>[0] = {};
+    const publicationId = c.req.query("publicationId");
+    const shareLinkId = c.req.query("shareLinkId");
+    const snapshotId = c.req.query("snapshotId");
+    if (publicationId) query.publicationId = publicationId;
+    if (shareLinkId) query.shareLinkId = shareLinkId;
+    if (snapshotId) query.snapshotId = snapshotId;
+    if (
+      status === "unread" ||
+      status === "read" ||
+      status === "resolved" ||
+      status === "rejected"
+    ) {
+      query.status = status;
+    }
+    return c.json(await publications.listFeedback(query));
+  });
+
+  app.patch("/api/owner/feedback/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const status = body.status;
+    if (
+      status !== "unread" &&
+      status !== "read" &&
+      status !== "resolved" &&
+      status !== "rejected"
+    ) {
+      return c.json({ error: "invalid status" }, 400);
+    }
+    const updated = await publications.setFeedbackStatus(c.req.param("id"), status);
+    if (!updated) return c.json({ error: "not found" }, 404);
+    return c.json(updated);
+  });
+
+  // The exact historical surface a submission was written against, addressed by
+  // SNAPSHOT rather than by share link — so the owner can reopen revision 3's
+  // context long after revision 7 went live, without any share link having to
+  // expose an old revision to its holder.
+  app.get("/api/owner/snapshots/:id/s/:item/:surface", async (c) => {
+    const snapshot = await publications.getSnapshot(c.req.param("id"));
+    const item = snapshot?.items[Number(c.req.param("item"))];
+    const surface = item?.surfaces[Number(c.req.param("surface"))];
+    if (!snapshot || !item || !surface || !isSandboxedSurfaceKind(surface.kind)) {
+      return c.text("No renderable surface there", 404);
+    }
+    return renderSurfaceDocument(c, item.title, surface);
+  });
+
   app.get("/api/owner/publications/:id/links", async (c) => {
     if (!(await publications.getPublication(c.req.param("id")))) {
       return c.json({ error: "not found" }, 404);
@@ -626,6 +678,52 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
 
   const isResponse = (value: Resolved | Response): value is Response => value instanceof Response;
 
+  // Render one sandboxed surface as its own document. Shared by the share-link
+  // route and the owner's historical-snapshot route so both are served under
+  // exactly the same headers — there is one place where the sandbox CSP is set,
+  // not two that can drift.
+  const renderSurfaceDocument = async (c: Context, title: string, surface: Surface) => {
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Content-Security-Policy", "sandbox allow-scripts");
+    // A snapshot is immutable, so its rendered surfaces are too. `private`
+    // because a password-protected publication must not sit in a shared cache.
+    c.header("Cache-Control", "private, max-age=31536000, immutable");
+
+    const themeId = c.req.query("theme") ?? DEFAULT_THEME_ID;
+    const theme = themeById(themeId);
+    const modeParam = c.req.query("mode");
+    const mode = modeParam === "light" || modeParam === "dark" ? modeParam : undefined;
+    const origin = new URL(c.req.url).origin;
+
+    if (surface.kind === "html") {
+      return c.html(
+        renderHtmlPage({ title, html: surface.html, origin, theme, mode, kits: surface.kits }),
+      );
+    }
+    if (surface.kind === "mermaid") {
+      return c.html(renderMermaidPage({ mermaid: surface.mermaid, origin, theme, mode }));
+    }
+    const { renderCode, renderDiff, renderMarkdown, renderTerminal } =
+      await import("./richRender.ts");
+    const rendered =
+      surface.kind === "markdown"
+        ? await renderMarkdown(surface, { theme: themeId, mode })
+        : surface.kind === "code"
+          ? await renderCode(surface, { theme: themeId, mode })
+          : surface.kind === "terminal"
+            ? renderTerminal(surface)
+            : surface.kind === "diff"
+              ? await renderDiff(surface, { theme: themeId, mode }).catch(() => ({
+                  body: `<div class="rich-error">Couldn’t render this diff</div>`,
+                  css: `.rich-error{color:var(--danger);font:13px/1.5 ui-monospace,monospace;padding:8px 12px;}`,
+                }))
+              : null;
+    if (!rendered) return c.text("No renderable surface there", 404);
+    return c.html(
+      renderSandboxedPart({ body: rendered.body, css: rendered.css, origin, theme, mode }),
+    );
+  };
+
   // --- public reads ---
 
   // The publication itself. A locked link renders the password gate rather than
@@ -698,52 +796,7 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     if (!surface || !isSandboxedSurfaceKind(surface.kind)) {
       return c.text("No renderable surface there", 404);
     }
-    c.header("X-Content-Type-Options", "nosniff");
-    c.header("Content-Security-Policy", "sandbox allow-scripts");
-    // A snapshot is immutable, so its rendered surfaces are too. `private`
-    // because a password-protected publication must not sit in a shared cache.
-    c.header("Cache-Control", "private, max-age=31536000, immutable");
-
-    const themeId = c.req.query("theme") ?? DEFAULT_THEME_ID;
-    const theme = themeById(themeId);
-    const modeParam = c.req.query("mode");
-    const mode = modeParam === "light" || modeParam === "dark" ? modeParam : undefined;
-    const origin = new URL(c.req.url).origin;
-
-    if (surface.kind === "html") {
-      return c.html(
-        renderHtmlPage({
-          title: item.title,
-          html: surface.html,
-          origin,
-          theme,
-          mode,
-          kits: surface.kits,
-        }),
-      );
-    }
-    if (surface.kind === "mermaid") {
-      return c.html(renderMermaidPage({ mermaid: surface.mermaid, origin, theme, mode }));
-    }
-    const { renderCode, renderDiff, renderMarkdown, renderTerminal } =
-      await import("./richRender.ts");
-    const rendered =
-      surface.kind === "markdown"
-        ? await renderMarkdown(surface, { theme: themeId, mode })
-        : surface.kind === "code"
-          ? await renderCode(surface, { theme: themeId, mode })
-          : surface.kind === "terminal"
-            ? renderTerminal(surface)
-            : surface.kind === "diff"
-              ? await renderDiff(surface, { theme: themeId, mode }).catch(() => ({
-                  body: `<div class="rich-error">Couldn’t render this diff</div>`,
-                  css: `.rich-error{color:var(--danger);font:13px/1.5 ui-monospace,monospace;padding:8px 12px;}`,
-                }))
-              : null;
-    if (!rendered) return c.text("No renderable surface there", 404);
-    return c.html(
-      renderSandboxedPart({ body: rendered.body, css: rendered.css, origin, theme, mode }),
-    );
+    return renderSurfaceDocument(c, item.title, surface);
   });
 
   // Assets a published snapshot pins. Publication-scoped by construction: an
