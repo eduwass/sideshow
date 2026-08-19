@@ -13,7 +13,13 @@ import {
   PUBLICATION_ASSET_AGENT,
   publicSurfaceView,
 } from "../server/publicApp.ts";
-import type { ShareLink, Snapshot, SnapshotItem } from "../server/publicationTypes.ts";
+import {
+  OPEN_EVENT_RETENTION_DAYS,
+  type ShareLink,
+  type Snapshot,
+  type SnapshotItem,
+} from "../server/publicationTypes.ts";
+import { VISITOR_WINDOW_DAYS } from "../server/visitorHash.ts";
 import { createSqliteStorage } from "../server/sqliteStorage.ts";
 import { SqlStore } from "../server/sqlStore.ts";
 import { JsonFileStore } from "../server/storage.ts";
@@ -42,8 +48,11 @@ const JSON_ = 7;
 const HTML_MARKUP = `<p id="seeded-markup">hello from the publication</p>`;
 const ASSET_BYTES = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
 
-async function seed(opts: { withPassword?: boolean; trackOpens?: boolean } = {}) {
-  const store = new SqlStore(createSqliteStorage());
+async function seed(
+  opts: { withPassword?: boolean; trackOpens?: boolean; now?: () => number } = {},
+) {
+  const storage = createSqliteStorage();
+  const store = new SqlStore(storage);
   const publications = store.publications;
   assert.ok(publications, "SqlStore must support publications");
 
@@ -109,9 +118,17 @@ async function seed(opts: { withPassword?: boolean; trackOpens?: boolean } = {})
   });
   assert.ok(link);
 
-  const app = createPublicApp({ store, ownerToken: OWNER_TOKEN, visitorSecret: VISITOR_SECRET });
+  const app = createPublicApp({
+    store,
+    ownerToken: OWNER_TOKEN,
+    visitorSecret: VISITOR_SECRET,
+    ...(opts.now && { now: opts.now }),
+  });
   return {
     store,
+    // The raw SQL surface, so a test can read what was really persisted rather
+    // than what the store chose to hand back.
+    storage,
     publications,
     app,
     session,
@@ -424,6 +441,292 @@ test("trackOpens:false answers 204 but records nothing, and a revoked link 404s"
 
   await publications.updateShareLink(link.id, { revokedAt: new Date().toISOString() });
   assert.equal((await post(app, "/api/v/demo-slug/open")).status, 404);
+});
+
+const DAY_MS = 86_400_000;
+const CHROME = {
+  "user-agent": "Mozilla/5.0 (Macintosh) Chrome/120",
+  "cf-connecting-ip": "1.1.1.1",
+};
+const IPHONE = {
+  "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+  "cf-connecting-ip": "1.1.1.1",
+};
+
+const openOnce = async (app: TestApp, headers: Record<string, string>) => {
+  const res = await post(app, "/api/v/demo-slug/open", undefined, headers);
+  assert.equal(res.status, 204);
+};
+
+// A confirmed open is confirmed precisely because the reader had to run the
+// page's script to send it. Anything a preview fetcher, a link unfurler or a
+// scanner can pull on its own must leave the count at zero.
+test("only POST /open records an open — fetching the page or a surface never does", async () => {
+  const { app, publications, link } = await seed();
+
+  const probes: [string, RequestInit][] = [
+    ["/v/demo-slug", {}],
+    ["/api/v/demo-slug", {}],
+    [`/api/v/demo-slug/s/0/${HTML}`, {}],
+    [`/api/v/demo-slug/s/0/${MARKDOWN}`, {}],
+    ["/robots.txt", {}],
+  ];
+  for (const [path, init] of probes) {
+    const res = await app.request(`${ORIGIN}${path}`, { ...init, headers: CHROME });
+    assert.equal(res.status, 200, `${path} should have been readable`);
+  }
+
+  assert.deepEqual(await publications.listOpenEvents(link.id), []);
+  assert.deepEqual(await publications.getOpenAggregate(link.id), {
+    shareLinkId: link.id,
+    firstOpenAt: null,
+    lastOpenAt: null,
+    totalOpens: 0,
+    uniqueVisitors: 0,
+  });
+
+  // The beacon, and only the beacon, moves it.
+  await openOnce(app, CHROME);
+  assert.equal((await publications.getOpenAggregate(link.id)).totalOpens, 1);
+});
+
+test("the aggregate reports first open, last open, total opens and approximate uniques", async () => {
+  const { app, publications, link } = await seed();
+
+  await openOnce(app, CHROME);
+  const first = await publications.getOpenAggregate(link.id);
+  assert.equal(first.totalOpens, 1);
+  assert.equal(first.uniqueVisitors, 1);
+  assert.ok(first.firstOpenAt, "a first open must be recorded");
+  assert.equal(first.lastOpenAt, first.firstOpenAt);
+
+  // The same reader again, then a different one.
+  await openOnce(app, CHROME);
+  await openOnce(app, IPHONE);
+
+  const after = await publications.getOpenAggregate(link.id);
+  assert.equal(after.totalOpens, 3);
+  assert.equal(after.uniqueVisitors, 2, "two approximate visitors, three opens");
+  // The first open is a fixed point; only the last one moves.
+  assert.equal(after.firstOpenAt, first.firstOpenAt);
+  const events = await publications.listOpenEvents(link.id);
+  assert.equal(events.length, 3);
+  assert.equal(after.lastOpenAt, events[0].at, "lastOpenAt is the newest event's instant");
+  assert.ok(
+    Date.parse(after.lastOpenAt as string) >= Date.parse(after.firstOpenAt as string),
+    "the last open cannot precede the first",
+  );
+
+  // A link nobody opened reports zeroes rather than nothing.
+  const untouched = await publications.createShareLink({ publicationId: link.publicationId });
+  assert.ok(untouched);
+  assert.deepEqual(await publications.getOpenAggregate(untouched.id), {
+    shareLinkId: untouched.id,
+    firstOpenAt: null,
+    lastOpenAt: null,
+    totalOpens: 0,
+    uniqueVisitors: 0,
+  });
+});
+
+test("a stored open keeps device class and country but neither the IP nor the raw user agent", async () => {
+  const { app, storage } = await seed();
+  const ip = "203.0.113.42";
+  const ua = IPHONE["user-agent"];
+  await openOnce(app, { "user-agent": ua, "cf-connecting-ip": ip, "cf-ipcountry": "ES" });
+
+  const events = storage.exec("SELECT * FROM open_events").toArray();
+  const visitors = storage.exec("SELECT * FROM open_visitors").toArray();
+  assert.equal(events.length, 1);
+  assert.equal(visitors.length, 1);
+
+  const persisted = JSON.stringify({ events, visitors });
+  assert.equal(persisted.includes(ip), false, "a raw IP reached storage");
+  assert.equal(persisted.includes("203.0.113"), false, "part of the IP reached storage");
+  assert.equal(persisted.includes(ua), false, "the raw user agent reached storage");
+  assert.equal(persisted.includes("iPhone"), false, "user-agent detail reached storage");
+
+  // What is kept instead: the coarse bucket, the country header, and a hash.
+  assert.equal(events[0].deviceClass, "mobile");
+  assert.equal(events[0].country, "ES");
+  assert.match(events[0].visitorHash as string, /^[0-9a-f]{32}$/);
+});
+
+test("the visitor hash is stable per reader and different for a different IP", async () => {
+  const { app, storage } = await seed();
+  await openOnce(app, CHROME);
+  await openOnce(app, CHROME);
+  await openOnce(app, { ...CHROME, "cf-connecting-ip": "198.51.100.7" });
+
+  const hashes = storage
+    .exec("SELECT visitorHash FROM open_events ORDER BY rowid")
+    .toArray()
+    .map((row) => row.visitorHash as string);
+  assert.equal(hashes.length, 3);
+  assert.equal(hashes[0], hashes[1], "same IP + user agent is the same approximate visitor");
+  assert.notEqual(hashes[0], hashes[2], "a different IP must not collide inside one window");
+});
+
+test("the visitor hash rotates: the same reader in a later window is a new hash", async () => {
+  let now = Date.now();
+  const { app, publications, storage, link } = await seed({ now: () => now });
+
+  await openOnce(app, CHROME);
+  // One whole rotation window later — the same reader, the same everything.
+  now += VISITOR_WINDOW_DAYS * DAY_MS;
+  await openOnce(app, CHROME);
+
+  const hashes = storage
+    .exec("SELECT visitorHash FROM open_events ORDER BY rowid")
+    .toArray()
+    .map((row) => row.visitorHash as string);
+  assert.notEqual(hashes[0], hashes[1], "the keyed hash must not survive its window");
+
+  // Which is exactly why "uniques" is approximate: one reader, counted twice.
+  assert.equal((await publications.getOpenAggregate(link.id)).uniqueVisitors, 2);
+});
+
+test("an open prunes events past the retention window, keeps the aggregate, and re-scans hourly at most", async () => {
+  let now = Date.now();
+  const { app, publications, storage, link, snapshot } = await seed({ now: () => now });
+
+  await openOnce(app, CHROME);
+  await openOnce(app, CHROME);
+  await openOnce(app, IPHONE);
+  const before = await publications.getOpenAggregate(link.id);
+  assert.equal(before.totalOpens, 3);
+  assert.equal(before.uniqueVisitors, 2);
+  assert.equal((await publications.listOpenEvents(link.id)).length, 3);
+
+  // Past the retention window: the next open takes the old detail with it.
+  now += (OPEN_EVENT_RETENTION_DAYS + 1) * DAY_MS;
+  await openOnce(app, CHROME);
+
+  assert.equal(
+    (await publications.listOpenEvents(link.id)).length,
+    1,
+    "only the open just recorded is still detailed",
+  );
+  const after = await publications.getOpenAggregate(link.id);
+  assert.equal(
+    after.firstOpenAt,
+    before.firstOpenAt,
+    "the aggregate keeps the original first open",
+  );
+  assert.equal(after.totalOpens, 4, "totals count opens whose detail has expired");
+  // The window rotated over those 91 days, so the same reader counts again.
+  assert.equal(after.uniqueVisitors, 3);
+
+  // Throttling, observed rather than inspected: an event planted as ancient
+  // right after a prune survives the next open, because that one does not scan.
+  const plant = (id: string) =>
+    storage.exec(
+      "INSERT INTO open_events (id, shareLinkId, snapshotId, visitorHash, deviceClass, country, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      id,
+      link.id,
+      snapshot.id,
+      "0".repeat(32),
+      "desktop",
+      null,
+      "1999-01-01T00:00:00.000Z",
+    );
+  const stillThere = async (id: string) =>
+    (await publications.listOpenEvents(link.id, 100)).some((event) => event.id === id);
+
+  plant("ancient-1");
+  now += 30 * 60 * 1000;
+  await openOnce(app, CHROME);
+  assert.equal(await stillThere("ancient-1"), true, "a prune within the hour must not re-scan");
+
+  // Once the hour is up, the very next open does scan.
+  now += 61 * 60 * 1000;
+  await openOnce(app, CHROME);
+  assert.equal(await stillThere("ancient-1"), false);
+});
+
+test("the analytics route reports the aggregate and recent events, and leaks nothing", async () => {
+  const { app, publications, link, snapshot } = await seed();
+  const path = `/api/owner/links/${link.id}/analytics`;
+
+  // An unknown link is a 404, not an empty shape to probe.
+  assert.equal((await ownerGet(app, "/api/owner/links/nope/analytics")).status, 404);
+  // And it is owner-only, like every other link route.
+  assert.equal((await get(app, path)).status, 401);
+
+  const empty = (await (await ownerGet(app, path)).json()) as any;
+  assert.equal(empty.trackOpens, true);
+  assert.equal(empty.retentionDays, OPEN_EVENT_RETENTION_DAYS);
+  assert.deepEqual(empty.aggregate, {
+    shareLinkId: link.id,
+    firstOpenAt: null,
+    lastOpenAt: null,
+    totalOpens: 0,
+    uniqueVisitors: 0,
+  });
+  assert.deepEqual(empty.events, []);
+
+  const ip = "203.0.113.42";
+  const ua = IPHONE["user-agent"];
+  await openOnce(app, { "user-agent": ua, "cf-connecting-ip": ip, "cf-ipcountry": "ES" });
+
+  const res = await ownerGet(app, path);
+  const wire = await res.clone().text();
+  const body = (await res.json()) as any;
+  assert.equal(body.aggregate.totalOpens, 1);
+  assert.equal(body.aggregate.uniqueVisitors, 1);
+  assert.ok(body.aggregate.firstOpenAt);
+  assert.equal(body.aggregate.lastOpenAt, body.aggregate.firstOpenAt);
+  assert.equal(body.events.length, 1);
+  assert.deepEqual(Object.keys(body.events[0]).sort(), [
+    "at",
+    "country",
+    "deviceClass",
+    "snapshotId",
+  ]);
+  assert.equal(body.events[0].deviceClass, "mobile");
+  assert.equal(body.events[0].country, "ES");
+  assert.equal(body.events[0].snapshotId, snapshot.id);
+
+  // Nothing that could identify the reader, and nothing owner-only either: the
+  // recipient label is the owner's note to themselves, not part of analytics.
+  const hash = (await publications.listOpenEvents(link.id))[0].visitorHash;
+  assert.equal(wire.includes(hash), false, "the rotating visitor hash reached a caller");
+  assert.equal(wire.includes("visitorHash"), false);
+  assert.equal(wire.includes(ip), false, "an IP reached a caller");
+  assert.equal(wire.includes(ua), false, "the raw user agent reached a caller");
+  assert.equal(wire.includes(RECIPIENT), false, "the recipient label reached a caller");
+});
+
+test("the analytics limit is clamped, and a nonsense one falls back to the default", async () => {
+  const { app, storage, link, snapshot } = await seed();
+  // Plant more rows than the ceiling allows, directly: 205 real beacons would
+  // only be 205 HMACs of the same assertion.
+  for (let i = 0; i < 205; i++) {
+    storage.exec(
+      "INSERT INTO open_events (id, shareLinkId, snapshotId, visitorHash, deviceClass, country, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      `planted-${i}`,
+      link.id,
+      snapshot.id,
+      String(i).padStart(32, "0"),
+      "desktop",
+      null,
+      new Date(Date.now() - i * 1000).toISOString(),
+    );
+  }
+
+  const count = async (query: string) => {
+    const res = await ownerGet(app, `/api/owner/links/${link.id}/analytics${query}`);
+    assert.equal(res.status, 200);
+    return ((await res.json()) as { events: unknown[] }).events.length;
+  };
+
+  assert.equal(await count(""), 50, "the default window is 50");
+  assert.equal(await count("?limit=2"), 2);
+  assert.equal(await count("?limit=200"), 200);
+  assert.equal(await count("?limit=100000"), 200, "clamped down to the ceiling");
+  assert.equal(await count("?limit=-3"), 1, "clamped up to one");
+  assert.equal(await count("?limit=abc"), 50, "unreadable falls back to the default");
+  assert.equal(await count("?limit=0"), 50);
 });
 
 // --- 6. external feedback -----------------------------------------------

@@ -15,6 +15,7 @@ import {
   type SnapshotItem,
   type TextAnchorMeta,
 } from "./publicationTypes.ts";
+import { OPEN_EVENT_RETENTION_DAYS } from "./publicationTypes.ts";
 import { RateLimiter } from "./rateLimit.ts";
 import { renderHtmlPage, renderMermaidPage, renderSandboxedPart } from "./surfacePage.ts";
 import { DEFAULT_THEME_ID, themeById } from "./themes.ts";
@@ -419,6 +420,29 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     return c.json(ownerLinkView(link), 201);
   });
 
+  // Per-link analytics for the owner dashboard. Aggregates are the durable
+  // record; detailed events are a 90-day window (see the prune below), so the
+  // two are reported separately rather than derived from each other.
+  app.get("/api/owner/links/:id/analytics", async (c) => {
+    const link = await publications.getShareLink(c.req.param("id"));
+    if (!link) return c.json({ error: "not found" }, 404);
+    const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
+    return c.json({
+      trackOpens: link.trackOpens,
+      retentionDays: OPEN_EVENT_RETENTION_DAYS,
+      aggregate: await publications.getOpenAggregate(link.id),
+      // Device class and country only — a confirmed open never retains an IP,
+      // and the visitor hash is keyed and rotates, so this is likely-recipient
+      // activity rather than proof of who opened anything.
+      events: (await publications.listOpenEvents(link.id, limit)).map((event) => ({
+        at: event.at,
+        deviceClass: event.deviceClass,
+        country: event.country,
+        snapshotId: event.snapshotId,
+      })),
+    });
+  });
+
   app.get("/api/owner/links/:id", async (c) => {
     const link = await publications.getShareLink(c.req.param("id"));
     if (!link) return c.json({ error: "not found" }, 404);
@@ -550,6 +574,20 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
         })
       ).id;
     return reservedSessionId;
+  };
+
+  // Detailed open events expire after 90 days while aggregates persist. There
+  // is no scheduler on this runtime, so the prune rides the only write that can
+  // grow the table — throttled so a burst of opens does not re-scan it.
+  let prunedAt = 0;
+  const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+  const pruneOldEvents = async (): Promise<void> => {
+    const now = clock();
+    if (now - prunedAt < PRUNE_INTERVAL_MS) return;
+    prunedAt = now;
+    await publications.pruneOpenEvents(
+      new Date(now - OPEN_EVENT_RETENTION_DAYS * 86_400_000).toISOString(),
+    );
   };
 
   // --- share-link resolution ---
@@ -770,6 +808,7 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     if (isResponse(resolved)) return resolved;
     const { link, snapshot } = resolved;
     if (!link.trackOpens) return c.body(null, 204);
+    await pruneOldEvents();
     const userAgent = c.req.header("user-agent") ?? "";
     await publications.recordOpen({
       shareLinkId: link.id,

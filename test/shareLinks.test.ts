@@ -9,6 +9,7 @@ import { createPublicApp, MAX_RECIPIENT_LABEL_LENGTH } from "../server/publicApp
 import {
   isValidCustomSlug,
   newShareToken,
+  OPEN_EVENT_RETENTION_DAYS,
   type PublicationStore,
   type ShareLink,
   shareLinkState,
@@ -658,9 +659,45 @@ test("duplicating a link copies its settings but nothing else", async () => {
   assert.equal((await f.publications.listFeedback({ shareLinkId: source.id })).length, 1);
 });
 
+// --- 7b. tracking opens is per link, and on unless it is turned off ------
+
+test("tracking opens is on by default and configurable per link", async () => {
+  const f = await seedPublic();
+
+  // The default is the absence of the field, which is how the dashboard and a
+  // bare `curl` both create a link.
+  const byDefault = await makeLink(f);
+  assert.equal(byDefault.trackOpens, true);
+  assert.equal((await makeLink(f, { trackOpens: true })).trackOpens, true);
+
+  const off = await makeLink(f, { trackOpens: false });
+  assert.equal(off.trackOpens, false);
+
+  // It flips both ways, and only on the link that was patched.
+  const patched = async (id: string, trackOpens: boolean) =>
+    ((await (await f.api.ownerPatch(`/api/owner/links/${id}`, { trackOpens })).json()) as ShareLink)
+      .trackOpens;
+  assert.equal(await patched(off.id, true), true);
+  assert.equal(await patched(off.id, false), false);
+  assert.equal(
+    ((await (await f.api.ownerGet(`/api/owner/links/${byDefault.id}`)).json()) as ShareLink)
+      .trackOpens,
+    true,
+    "patching one link must not change another",
+  );
+
+  // And the setting is what actually decides whether a beacon counts.
+  assert.equal((await f.api.post(`/api/v/${byDefault.slug}/open`)).status, 204);
+  assert.equal((await f.api.post(`/api/v/${off.slug}/open`)).status, 204);
+  assert.equal((await f.publications.getOpenAggregate(byDefault.id)).totalOpens, 1);
+  assert.equal((await f.publications.getOpenAggregate(off.id)).totalOpens, 0);
+  assert.deepEqual(await f.publications.listOpenEvents(off.id), []);
+});
+
 test("owner link routes 404 for an unknown link id", async () => {
   const f = await seedPublic();
   assert.equal((await f.api.ownerGet("/api/owner/links/nope")).status, 404);
+  assert.equal((await f.api.ownerGet("/api/owner/links/nope/analytics")).status, 404);
   assert.equal((await f.api.ownerPatch("/api/owner/links/nope", { revoked: true })).status, 404);
   assert.equal((await f.api.ownerPost("/api/owner/links/nope/duplicate", {})).status, 404);
   assert.equal((await f.api.ownerDelete("/api/owner/links/nope")).status, 404);
@@ -671,6 +708,7 @@ test("owner link routes demand the bearer token", async () => {
   const link = await makeLink(f);
   const probes: [string, RequestInit][] = [
     [`/api/owner/links/${link.id}`, {}],
+    [`/api/owner/links/${link.id}/analytics`, {}],
     [`/api/owner/links/${link.id}`, { method: "PATCH", body: "{}" }],
     [`/api/owner/links/${link.id}/duplicate`, { method: "POST", body: "{}" }],
     [`/api/owner/links/${link.id}`, { method: "DELETE" }],
@@ -749,6 +787,44 @@ test("every owner publication route works end to end through the private service
   assert.equal(link.recipientLabel, RECIPIENT);
   assert.equal(link.hasPassword, false);
 
+  // Analytics come back over the same proxy: record a real confirmed open on
+  // the public runtime, then read it through the private service.
+  assert.equal(
+    (
+      await stack.publicApp.request(`${DEST_ORIGIN}/api/v/${link.slug}/open`, {
+        method: "POST",
+        headers: {
+          "user-agent": "Mozilla/5.0 (Macintosh) Chrome/120",
+          "cf-connecting-ip": "1.1.1.1",
+          "cf-ipcountry": "PT",
+        },
+      })
+    ).status,
+    204,
+  );
+  const analytics = await call(`/api/publications/links/${link.id}/analytics?limit=5`);
+  const analyticsBody = bodies[bodies.length - 1];
+  assert.equal(analytics.status, 200);
+  const opens = (await analytics.json()) as {
+    trackOpens: boolean;
+    retentionDays: number;
+    aggregate: { totalOpens: number; uniqueVisitors: number; firstOpenAt: string | null };
+    events: { deviceClass: string | null; country: string | null }[];
+  };
+  assert.equal(opens.trackOpens, true);
+  assert.equal(opens.retentionDays, OPEN_EVENT_RETENTION_DAYS);
+  assert.equal(opens.aggregate.totalOpens, 1);
+  assert.equal(opens.aggregate.uniqueVisitors, 1);
+  assert.ok(opens.aggregate.firstOpenAt);
+  assert.deepEqual(
+    opens.events.map((event) => [event.deviceClass, event.country]),
+    [["desktop", "PT"]],
+  );
+  // The proxy is not a hole in any of the analytics guarantees.
+  assert.equal(analyticsBody.includes(RECIPIENT), false, "the recipient label reached the owner");
+  assert.equal(analyticsBody.includes("visitorHash"), false);
+  assert.equal(analyticsBody.includes("1.1.1.1"), false, "an IP reached the owner");
+
   const locked = await call(
     `/api/publications/links/${link.id}`,
     patch({ password: PASSWORD_A, trackOpens: false }),
@@ -803,6 +879,7 @@ test("owner publication routes report 503 with no destination configured", async
     ["/api/publications/links/x", { method: "PATCH", body: "{}" }],
     ["/api/publications/links/x/duplicate", { method: "POST", body: "{}" }],
     ["/api/publications/links/x", { method: "DELETE" }],
+    ["/api/publications/links/x/analytics", {}],
   ];
   for (const [path, init] of probes) {
     const res = await app.request(path, {
@@ -827,6 +904,7 @@ test("a destination 404 maps to 404 and any other failure to a token-free 502", 
     ["/api/publications/links/nope", { method: "PATCH", body: "{}" }],
     ["/api/publications/links/nope/duplicate", { method: "POST", body: "{}" }],
     ["/api/publications/links/nope", { method: "DELETE" }],
+    ["/api/publications/links/nope/analytics", {}],
   ] as [string, RequestInit][]) {
     const res = await stack.app.request(path, {
       ...init,
@@ -848,6 +926,7 @@ test("a destination 404 maps to 404 and any other failure to a token-free 502", 
     ["/api/publications/links/x", { method: "PATCH", body: "{}" }],
     ["/api/publications/links/x/duplicate", { method: "POST", body: "{}" }],
     ["/api/publications/links/x", { method: "DELETE" }],
+    ["/api/publications/links/x/analytics", {}],
     [`/api/publications/${publicationId}`, { method: "DELETE" }],
   ] as [string, RequestInit][]) {
     const res = await stack.app.request(path, {
@@ -883,6 +962,7 @@ test("no publication or publish route is readable on a public-read workspace", a
     ["PATCH", "/api/publications/x"],
     ["DELETE", "/api/publications/x"],
     ["POST", "/api/publications/x/links"],
+    ["GET", "/api/publications/links/x/analytics"],
     ["PATCH", "/api/publications/links/x"],
     ["POST", "/api/publications/links/x/duplicate"],
     ["DELETE", "/api/publications/links/x"],

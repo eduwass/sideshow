@@ -1,5 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import {
+  ANALYTICS_DISCLAIMER,
+  ANALYTICS_RECENT_LIMIT,
   createShareLink,
   CUSTOM_SLUG_WARNING,
   deletePublication,
@@ -7,13 +9,19 @@ import {
   duplicateShareLink,
   expiryFromInput,
   expiryInputValue,
+  formatCountry,
+  formatDeviceClass,
   formatExpiry,
+  formatOpenAt,
   listPublications,
   type Publication,
   publicationDetail,
   type PublicationDetail,
   publicationErrorMessage,
   relTime,
+  retentionNote,
+  type ShareLinkAnalytics,
+  shareLinkAnalytics,
   type ShareLinkView,
   shareLinkStatus,
   shareLinkUrl,
@@ -623,6 +631,9 @@ function ShareLinkRow(props: { link: ShareLinkView; origin: string; run: Run }) 
   const [duplicating, setDuplicating] = createSignal(false);
   const [confirmRevoke, setConfirmRevoke] = createSignal(false);
   const [confirmDelete, setConfirmDelete] = createSignal(false);
+  // Analytics are one request per link, so they are fetched only once the owner
+  // asks for this link's — never for the whole table on load.
+  const [showOpens, setShowOpens] = createSignal(false);
 
   const url = createMemo(() => shareLinkUrl(props.origin, props.link.slug));
   const state = () => shareLinkStatus(props.link);
@@ -664,6 +675,14 @@ function ShareLinkRow(props: { link: ShareLinkView; origin: string; run: Run }) 
             <a class="publish-btn" href={url()} target="_blank" rel="noopener noreferrer">
               Open
             </a>
+            <button
+              class="publish-btn"
+              type="button"
+              aria-expanded={showOpens()}
+              onClick={() => setShowOpens(!showOpens())}
+            >
+              Opens
+            </button>
             <button class="publish-btn" type="button" onClick={() => setEditing(!editing())}>
               Update
             </button>
@@ -685,6 +704,14 @@ function ShareLinkRow(props: { link: ShareLinkView; origin: string; run: Run }) 
           </div>
         </td>
       </tr>
+
+      <Show when={showOpens()}>
+        <tr class="pubs-subrow">
+          <td colSpan={5}>
+            <ShareLinkOpens link={props.link} />
+          </td>
+        </tr>
+      </Show>
 
       <Show when={confirmRevoke()}>
         <tr class="pubs-subrow">
@@ -770,6 +797,103 @@ function ShareLinkRow(props: { link: ShareLinkView; origin: string; run: Run }) 
         </tr>
       </Show>
     </>
+  );
+}
+
+// What this link's readers actually did, and — just as important — the limits of
+// what that means. The disclaimer and the retention note sit next to the numbers
+// rather than in a doc somewhere: an owner reading "2 visitors" has to be able
+// to see, in the same glance, that those are rotating hashes and not people.
+//
+// One request per link, made here on expand, so a dashboard with twenty links
+// still loads with one call per publication.
+function ShareLinkOpens(props: { link: ShareLinkView }) {
+  const [data, setData] = createSignal<ShareLinkAnalytics | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
+
+  const load = async () => {
+    try {
+      setData(await shareLinkAnalytics(props.link.id, ANALYTICS_RECENT_LIMIT));
+    } catch (err) {
+      setError(publicationErrorMessage(err, "Couldn't load opens for this link"));
+    }
+  };
+
+  onMount(() => void load());
+
+  return (
+    <div class="pubs-opens" aria-label="Confirmed opens">
+      <Show when={!props.link.trackOpens}>
+        <p class="pubs-note" role="note">
+          Tracking is off for this link, so nothing new is being recorded. Anything below is from
+          before it was switched off.
+        </p>
+      </Show>
+      <Show when={error()}>
+        {(message) => (
+          <p class="pubs-error" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+      <Show
+        when={data()}
+        fallback={
+          <Show when={!error()}>
+            <p class="pubs-loading">Loading opens…</p>
+          </Show>
+        }
+      >
+        {(analytics) => (
+          <>
+            <dl class="pubs-stats">
+              <div>
+                <dt>First open</dt>
+                <dd>{formatOpenAt(analytics().aggregate.firstOpenAt)}</dd>
+              </div>
+              <div>
+                <dt>Last open</dt>
+                <dd>{formatOpenAt(analytics().aggregate.lastOpenAt)}</dd>
+              </div>
+              <div>
+                <dt>Total opens</dt>
+                <dd>{analytics().aggregate.totalOpens}</dd>
+              </div>
+              <div>
+                <dt>Approximate visitors</dt>
+                <dd>{analytics().aggregate.uniqueVisitors}</dd>
+              </div>
+            </dl>
+            <Show
+              when={analytics().events.length > 0}
+              fallback={
+                <p class="pubs-empty">
+                  {analytics().aggregate.totalOpens > 0
+                    ? "No opens recent enough to list — the totals above still count the older ones."
+                    : "No opens yet. Nothing is recorded until someone actually renders the page behind this link."}
+                </p>
+              }
+            >
+              <p class="pubs-preview-label">Recent activity</p>
+              <ul class="pubs-open-list">
+                <For each={analytics().events}>
+                  {(event) => (
+                    <li>
+                      <span class="pubs-open-at">{relTime(event.at)}</span>
+                      <span class="pubs-open-meta">
+                        {formatDeviceClass(event.deviceClass)} · {formatCountry(event.country)}
+                      </span>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+            <p class="pubs-note">{ANALYTICS_DISCLAIMER}</p>
+            <p class="pubs-note">{retentionNote(analytics().retentionDays)}</p>
+          </>
+        )}
+      </Show>
+    </div>
   );
 }
 
@@ -930,7 +1054,9 @@ function NewShareLinkForm(props: { publicationId: string; run: Run; onDone: () =
   const [slug, setSlug] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [expiry, setExpiry] = createSignal("");
-  const [tracking, setTracking] = createSignal(false);
+  // On by default, matching the public service's own default for a link created
+  // without the field — the dashboard must not quietly opt a new link out.
+  const [tracking, setTracking] = createSignal(true);
   const [saving, setSaving] = createSignal(false);
 
   return (
