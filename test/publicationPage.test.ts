@@ -305,3 +305,184 @@ test("the password gate escapes the slug into its action and honours basePath", 
   assert.match(html, /"\/show\/api\/v\/a%22b\/unlock"/);
   assert.equal(html.includes(`a"b`), false);
 });
+
+// --- neutrality: no product branding, no private chrome ------------------
+
+// The one thing a client page must never do is look like a Sideshow page. The
+// two identifiers below are protocol, not branding: `sideshow.scheme` is the
+// localStorage key the reader's own scheme override lives under, and
+// `__sideshow` is the postMessage marker the sandboxed surface bridge stamps
+// its messages with (server/surfacePage.ts) — the page has to recognise it to
+// size a frame. Both live inside the inline script and are invisible to a
+// reader. Anything else bearing the product name is a leak, so the assertion
+// below is an exact allowlist rather than a substring search.
+const SCRIPT_BLOCK = /<script[^>]*>([\s\S]*?)<\/script>/;
+
+function assertNoBranding(html: string, label: string) {
+  const markup = html.replace(SCRIPT_BLOCK, "<script></script>");
+  assert.equal(
+    /sideshow/i.test(markup),
+    false,
+    `${label}: the product name reached the rendered markup`,
+  );
+  const script = SCRIPT_BLOCK.exec(html)?.[1] ?? "";
+  const tokens = [...script.matchAll(/[\w$]*sideshow[\w$.]*/gi)].map((m) => m[0]);
+  assert.deepEqual(
+    [...new Set(tokens)],
+    tokens.length ? ["sideshow.scheme", "__sideshow"] : [],
+    `${label}: unexpected product name in the inline script`,
+  );
+  // Nor any of the usual ways a product signs its own pages.
+  for (const marketing of [/powered by/i, /made with/i, /built with/i, /\bbrand\b/i]) {
+    assert.equal(marketing.test(html), false, `${label}: ${marketing}`);
+  }
+}
+
+// Private-runtime surfaces that must have no representative on a client page.
+const PRIVATE_CHROME = [
+  "/api/sessions",
+  "/api/posts",
+  "/api/comments",
+  "/api/events",
+  "/api/snippets",
+  "/api/surfaces",
+  "/api/theme",
+  "/api/publications",
+  "/api/owner",
+  "/mcp",
+  "/setup",
+  "/guide",
+  "/connect",
+  "/agent-howto",
+  "session",
+  "workspace",
+  "viewer/dist",
+  "engine.js",
+];
+
+function assertNoPrivateChrome(html: string, label: string) {
+  const lower = html.toLowerCase();
+  for (const marker of PRIVATE_CHROME) {
+    assert.equal(lower.includes(marker.toLowerCase()), false, `${label}: leaked ${marker}`);
+  }
+  // No script the page did not build itself: the viewer bundle, or anything
+  // else with a src, would be a second origin's code running here.
+  assert.equal(/<script[^>]+src=/i.test(html), false, `${label}: an external script`);
+  assert.equal(/<link[^>]+href=/i.test(html), false, `${label}: an external stylesheet`);
+}
+
+test("a publication page carries no product branding and no private chrome", () => {
+  const html = render({
+    identity: {
+      name: "Edu Wass",
+      avatarAssetId: "avatar-1",
+      linkUrl: "https://example.com/edu",
+      linkLabel: "example.com",
+    },
+    trackOpens: true,
+    items: [
+      item({
+        title: "First",
+        surfaces: [
+          { kind: "html", html: "<p>x</p>" },
+          { kind: "markdown", markdown: "# x" },
+          { kind: "image", assetId: "asset-1", caption: "a figure" },
+          { kind: "json", data: { ok: true } },
+        ],
+      }),
+      item({ title: "Second", surfaces: [{ kind: "terminal", text: "$ x" }] }),
+    ],
+  });
+  assertNoBranding(html, "publication page");
+  assertNoPrivateChrome(html, "publication page");
+
+  // Every link the page offers is either an in-page anchor or the identity's
+  // own external URL — never a route back into the product.
+  const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual(hrefs, ["https://example.com/edu", "#item-0", "#item-1"]);
+
+  // The only URLs the page fetches or frames are publication-scoped.
+  const urls = [...html.matchAll(/(?:src|fetch\()="?([^"')]+)/g)].map((m) => m[1]);
+  for (const url of urls) {
+    assert.match(url, /^\/(api\/v\/demo-slug\/|a\/)/, `unexpected URL ${url}`);
+  }
+});
+
+test("the password gate carries no product branding and no private chrome", () => {
+  const html = renderPasswordPage("demo-slug", NONCE);
+  assertNoBranding(html, "password gate");
+  assertNoPrivateChrome(html, "password gate");
+  assert.deepEqual([...html.matchAll(/href="([^"]*)"/g)], []);
+});
+
+// --- the neutral palette and its local override -------------------------
+
+test("the palette is defined on bare :root, then overridden by scheme", () => {
+  const html = render();
+
+  // Light is the bare default, so a reader with no system preference and no
+  // override still gets a complete palette.
+  const bare = /:root\{([^}]*)\}/.exec(html)?.[1] ?? "";
+  assert.match(bare, /--bg:#ffffff/);
+  assert.match(bare, /--text:#1b1b1f/);
+  assert.match(bare, /color-scheme: light dark/);
+
+  // System dark follows — but guarded, so an explicit light override wins.
+  assert.match(
+    html,
+    /@media \(prefers-color-scheme: dark\)\{\s*:root:not\(\[data-scheme="light"\]\)\{[^}]*--bg:#111114/,
+  );
+  // And an explicit dark override wins over a light system preference.
+  assert.match(html, /:root\[data-scheme="dark"\]\{[^}]*--bg:#111114/);
+  assert.match(html, /:root\[data-scheme="light"\]\{[^}]*color-scheme: light/);
+
+  // body paints its own ground from a token rather than inheriting one.
+  const body = /\bbody\{([^}]*)\}/.exec(html)?.[1] ?? "";
+  assert.match(body, /background:var\(--bg\)/);
+  assert.match(body, /color:var\(--text\)/);
+
+  // No brand hue anywhere in the palette — the neutral greys only.
+  for (const [, value] of html.matchAll(
+    /--(?:bg|surface|border|text|muted|accent):(#[0-9a-f]{6})/g,
+  )) {
+    const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(value.slice(i, i + 2), 16));
+    assert.ok(Math.max(r, g, b) - Math.min(r, g, b) <= 12, `${value} is not neutral`);
+  }
+});
+
+test("the scheme toggle is a labelled control that persists the reader's choice locally", () => {
+  const html = render();
+  assert.match(
+    html,
+    /<button id="scheme-toggle" type="button" aria-label="Switch between light and dark">/,
+  );
+  // The choice is stored on the reader's device and never posted anywhere.
+  assert.match(html, /localStorage\.setItem\(KEY, next\)/);
+  assert.match(html, /var KEY = 'sideshow\.scheme'/);
+  // Switching re-requests each surface with an explicit mode: a sandboxed
+  // surface bakes its colours in, so it must re-render rather than restyle.
+  assert.match(html, /'mode=' \+ mode/);
+  assert.match(html, /root\.setAttribute\('data-scheme', scheme\)/);
+  // With nothing stored, the system preference decides.
+  assert.match(html, /prefers-color-scheme: dark/);
+});
+
+// --- isolation ----------------------------------------------------------
+
+test("an html surface's script never reaches the trusted page, only its iframe reference", () => {
+  const html = render({
+    items: [
+      item({
+        surfaces: [{ kind: "html", html: `<script>window.__pwned = 1;</script><p>hi</p>` }],
+      }),
+    ],
+  });
+  assert.equal(html.includes("__pwned"), false);
+  assert.equal(html.includes("<script>window"), false);
+  // Exactly one script in the document: the page's own nonced bridge.
+  assert.equal(html.split("<script").length - 1, 1);
+  assert.match(html, /<iframe data-surface sandbox="allow-scripts allow-popups"/);
+  assert.equal(html.includes("allow-same-origin"), false);
+  assert.equal(html.includes("allow-forms"), false);
+  assert.equal(html.includes("allow-top-navigation"), false);
+});

@@ -1302,3 +1302,252 @@ test("unknown, revoked and expired slugs render one byte-identical page", async 
   assert.equal(body.includes("Quarterly report"), false);
   assert.match(body, /This link is not available\./);
 });
+
+// --- 18. the neutral viewer (issue #7) ----------------------------------
+
+// The product name may appear in the served page only as protocol: the scheme
+// override's localStorage key and the surface bridge's postMessage marker, both
+// inside the page's own inline script and invisible to a reader.
+const SCRIPT_BLOCK = /<script[^>]*>([\s\S]*?)<\/script>/;
+
+function assertNeutralDocument(html: string, label: string) {
+  const markup = html.replace(SCRIPT_BLOCK, "<script></script>");
+  assert.equal(/sideshow/i.test(markup), false, `${label}: product name in the markup`);
+  const script = SCRIPT_BLOCK.exec(html)?.[1] ?? "";
+  const tokens = [...script.matchAll(/[\w$]*sideshow[\w$.]*/gi)].map((m) => m[0]);
+  assert.deepEqual(
+    [...new Set(tokens)],
+    tokens.length ? ["sideshow.scheme", "__sideshow"] : [],
+    `${label}: unexpected product name in the inline script`,
+  );
+  for (const marker of [
+    "/api/sessions",
+    "/api/posts",
+    "/api/comments",
+    "/api/events",
+    "/api/publications",
+    "/api/owner",
+    "/mcp",
+    "/setup",
+    "/guide",
+    "/connect",
+    "session",
+    "workspace",
+    "viewer/dist",
+  ]) {
+    assert.equal(html.toLowerCase().includes(marker), false, `${label}: leaked ${marker}`);
+  }
+  assert.equal(/<script[^>]+src=/i.test(html), false, `${label}: an external script`);
+  assert.equal(/<link[^>]+href=/i.test(html), false, `${label}: an external stylesheet`);
+}
+
+test("the publication, gate and not-found pages are all neutral", async () => {
+  const { app } = await seed();
+  assertNeutralDocument(await (await get(app, "/v/demo-slug")).text(), "publication");
+  assertNeutralDocument(await (await get(app, "/v/never-existed")).text(), "not found");
+
+  const locked = await seed({ withPassword: true });
+  assertNeutralDocument(await (await get(locked.app, "/v/demo-slug")).text(), "gate");
+});
+
+test("the identity header is off by default and served with its avatar when set", async () => {
+  const store = new SqlStore(createSqliteStorage());
+  const publications = store.publications!;
+  const session = await store.createSession({ agent: "pi" });
+  const avatar = await store.putAsset({
+    sessionId: session.id,
+    kind: "image",
+    contentType: "image/png",
+    data: new Uint8Array([1, 2, 3, 4]),
+  });
+  assert.ok(avatar);
+  const stranger = await store.putAsset({
+    sessionId: session.id,
+    kind: "image",
+    contentType: "image/png",
+    data: new Uint8Array([5, 6, 7, 8]),
+  });
+  assert.ok(stranger);
+  const publication = await publications.createPublication({ kind: "post", title: "Neutral" });
+  await publications.createSnapshot({
+    publicationId: publication.id,
+    items: [{ postId: "p", title: "t", version: 1, surfaces: [{ kind: "json", data: 1 }] }],
+  });
+  await publications.createShareLink({ publicationId: publication.id, slug: "ident-slug" });
+  const app = createPublicApp({ store, ownerToken: OWNER_TOKEN, visitorSecret: VISITOR_SECRET });
+
+  // Off by default: a publication created without an identity renders none.
+  const bare = await (await get(app, "/v/ident-slug")).text();
+  assert.equal(bare.includes('header class="identity"'), false);
+  // And its avatar route is closed until a publication points at the asset.
+  assert.equal((await get(app, `/a/${avatar.id}`)).status, 404);
+
+  await publications.updatePublication(publication.id, {
+    identity: {
+      name: "Edu Wass",
+      avatarAssetId: avatar.id,
+      linkUrl: "https://example.com/edu",
+      linkLabel: "example.com",
+    },
+  });
+  const withIdentity = await (await get(app, "/v/ident-slug")).text();
+  assert.match(withIdentity, /<header class="identity"><img src="\/a\/[0-9a-f]+" alt="">/);
+  assert.ok(withIdentity.includes(`/a/${avatar.id}`));
+  assert.match(withIdentity, /<div class="who">Edu Wass<\/div>/);
+  assert.match(
+    withIdentity,
+    /<a href="https:\/\/example\.com\/edu" rel="noopener noreferrer nofollow" target="_blank">example\.com<\/a>/,
+  );
+  // Exactly one link, so an identity header can never become a link farm.
+  assert.equal(withIdentity.split("<a href=").length - 1, 1);
+
+  // The avatar is now reachable even though no snapshot pins it — but an asset
+  // that is neither pinned nor an avatar stays closed.
+  const served = await get(app, `/a/${avatar.id}`);
+  assert.equal(served.status, 200);
+  assert.deepEqual(new Uint8Array(await served.arrayBuffer()), new Uint8Array([1, 2, 3, 4]));
+  assert.equal((await get(app, `/a/${stranger.id}`)).status, 404);
+});
+
+test("nothing lists publications or share links without the owner token", async () => {
+  const { app, publication, link, snapshot } = await seed();
+  const paths = [
+    "/api/v",
+    "/api/v/",
+    "/v",
+    "/v/",
+    "/api",
+    "/api/publications",
+    "/api/links",
+    "/api/snapshots",
+    "/api/owner",
+    "/api/owner/publications",
+    "/api/owner/publications/",
+    `/api/owner/publications/${publication.id}`,
+    `/api/owner/publications/${publication.id}/links`,
+    `/api/owner/links/${link.id}`,
+    `/api/owner/snapshots/${snapshot.id}`,
+    "/api/v/demo-slug/links",
+    "/api/v/demo-slug/publications",
+    "/publications",
+    "/links",
+    "/sitemap.xml",
+    "/.well-known/publications",
+  ];
+  for (const path of paths) {
+    const res = await get(app, path);
+    assert.ok([401, 404].includes(res.status), `${path} answered ${res.status}`);
+    const body = await res.text();
+    for (const secret of [publication.id, link.id, link.slug, snapshot.id, RECIPIENT]) {
+      assert.equal(body.includes(secret), false, `${path} leaked ${secret}`);
+    }
+  }
+});
+
+test("every public response is noindex, in the header and on the page", async () => {
+  const { app, asset } = await seed({ withPassword: false });
+  for (const path of [
+    "/v/demo-slug",
+    "/v/never-existed",
+    "/api/v/demo-slug",
+    `/api/v/demo-slug/s/0/${HTML}`,
+    `/a/${asset.id}`,
+    "/robots.txt",
+  ]) {
+    const res = await get(app, path);
+    assert.match(res.headers.get("x-robots-tag") ?? "", /noindex/, path);
+  }
+  // The HTML pages say it a second time, for a crawler that reads only markup.
+  for (const path of ["/v/demo-slug", "/v/never-existed"]) {
+    const html = await (await get(app, path)).text();
+    assert.match(html, /<meta name="robots" content="noindex/, path);
+  }
+  const gate = await seed({ withPassword: true });
+  assert.match(
+    await (await get(gate.app, "/v/demo-slug")).text(),
+    /<meta name="robots" content="noindex/,
+  );
+  assert.equal(await (await get(app, "/robots.txt")).text(), "User-agent: *\nDisallow: /\n");
+});
+
+// Every stable surface kind, end to end: the sandboxed ones as their own
+// documents, the data ones as escaped nodes in the page.
+const RENDERED: [number, RegExp[]][] = [
+  [HTML, [/<p id="seeded-markup">hello from the publication<\/p>/]],
+  [MARKDOWN, [/<h1>Heading<\/h1>/, /<strong>prose<\/strong>/]],
+  [CODE, [/class="shiki/, /<span style="color:/]],
+  [TERMINAL, [/class="term-body"/, /\$ npm test/]],
+  [DIFF, [/<diffs-container>/, /shadowrootmode="open"/]],
+  [MERMAID, [/https:\/\/esm\.sh\/mermaid@11/, /mermaid\.render\(/]],
+];
+
+test("every stable surface kind renders its own output in its own sandboxed document", async () => {
+  const { app } = await seed();
+  for (const [index, markers] of RENDERED) {
+    const res = await get(app, `/api/v/demo-slug/s/0/${index}`);
+    assert.equal(res.status, 200, `surface ${index}`);
+    assert.equal(res.headers.get("content-security-policy"), "sandbox allow-scripts", `${index}`);
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff", `${index}`);
+    const body = await res.text();
+    for (const marker of markers) assert.match(body, marker, `surface ${index}`);
+  }
+
+  // image and json have no HTML sink, so they are never served as documents —
+  // they are escaped into the page instead.
+  for (const index of [IMAGE, JSON_]) {
+    assert.equal((await get(app, `/api/v/demo-slug/s/0/${index}`)).status, 404, `${index}`);
+  }
+  const page = await (await get(app, "/v/demo-slug")).text();
+  assert.match(
+    page,
+    /<figure class="surface"><img src="\/a\/[0-9a-f]+" alt="a png" loading="lazy">/,
+  );
+  assert.match(page, /<figcaption>figure 1<\/figcaption>/);
+  assert.match(page, /<div class="surface"><pre>\{\n  &quot;answer&quot;: 42\n\}<\/pre><\/div>/);
+  // One iframe per sandboxed surface and not one more.
+  assert.equal(page.split("<iframe").length - 1, RENDERED.length);
+});
+
+test("a themed surface renders differently per mode, and an unknown mode falls back", async () => {
+  const { app } = await seed();
+  for (const [index] of RENDERED) {
+    const base = await (await get(app, `/api/v/demo-slug/s/0/${index}`)).text();
+    const light = await (await get(app, `/api/v/demo-slug/s/0/${index}?mode=light`)).text();
+    const dark = await (await get(app, `/api/v/demo-slug/s/0/${index}?mode=dark`)).text();
+    assert.notEqual(light, dark, `surface ${index} ignores mode`);
+    // Anything else is not an error: it renders the unpinned document, which
+    // follows the reader's own system scheme.
+    const bogus = await get(app, `/api/v/demo-slug/s/0/${index}?mode=sideways`);
+    assert.equal(bogus.status, 200, `surface ${index}`);
+    assert.equal(await bogus.text(), base, `surface ${index} bogus mode`);
+  }
+});
+
+test("a script inside an html surface exists only in the sandboxed document", async () => {
+  const store = new SqlStore(createSqliteStorage());
+  const publications = store.publications!;
+  const publication = await publications.createPublication({ kind: "post", title: "Scripted" });
+  await publications.createSnapshot({
+    publicationId: publication.id,
+    items: [
+      {
+        postId: "p",
+        title: "t",
+        version: 1,
+        surfaces: [{ kind: "html", html: `<script>window.__pwned = 1;</script><p>hi</p>` }],
+      },
+    ],
+  });
+  await publications.createShareLink({ publicationId: publication.id, slug: "script-slug" });
+  const app = createPublicApp({ store, ownerToken: OWNER_TOKEN, visitorSecret: VISITOR_SECRET });
+
+  const page = await (await get(app, "/v/script-slug")).text();
+  assert.equal(page.includes("__pwned"), false, "agent script reached the trusted page");
+  assert.equal(page.split("<script").length - 1, 1, "only the page's own nonced script");
+  assert.match(page, /<iframe data-surface sandbox="allow-scripts allow-popups"/);
+  assert.equal(page.includes("allow-same-origin"), false);
+
+  const document = await get(app, "/api/v/script-slug/s/0/0");
+  assert.equal(document.headers.get("content-security-policy"), "sandbox allow-scripts");
+  assert.ok((await document.text()).includes("__pwned"), "the script lives in the sandbox");
+});

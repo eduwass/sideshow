@@ -711,9 +711,18 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
   // Assets a published snapshot pins. Publication-scoped by construction: an
   // asset that no snapshot pins is unreachable here, and asset ids are the
   // SHA-256 of their own bytes, so they cannot be enumerated.
+  // An identity header's avatar is referenced by a publication rather than by a
+  // snapshot's surfaces, so it needs its own reachability check. There are only
+  // ever a handful of publications in a workspace, so a scan is cheaper than
+  // another index to keep in step.
+  const isIdentityAvatar = async (id: string): Promise<boolean> =>
+    (await publications.listPublications()).some((p) => p.identity?.avatarAssetId === id);
+
   app.get("/a/:id", async (c) => {
     const id = c.req.param("id");
-    if (!(await publications.isSnapshotAsset(id))) return c.text("Asset not found", 404);
+    if (!(await publications.isSnapshotAsset(id)) && !(await isIdentityAvatar(id))) {
+      return c.text("Asset not found", 404);
+    }
     const asset = await store.getAsset(id);
     if (!asset) return c.text("Asset not found", 404);
     await store.touchAsset(asset.id);

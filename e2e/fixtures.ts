@@ -32,8 +32,10 @@ export async function startSideshowServer(
     let out = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
       out += chunk.toString();
-      const match = out.match(/listening on (http:\/\/localhost:\d+)/);
-      if (match) resolve(match[1]);
+      // The private server announces its full URL; the public publication
+      // service announces only its port.
+      const match = out.match(/listening on (?:(http:\/\/localhost:\d+)|port (\d+))/);
+      if (match) resolve(match[1] ?? `http://localhost:${match[2]}`);
     });
     proc.on("exit", (code) => reject(new Error(`server exited early with code ${code}`)));
     setTimeout(() => reject(new Error(`server did not boot in time; output: ${out}`)), 15_000);
@@ -68,6 +70,104 @@ export const publicReadTest = base.extend<{ publicReadServer: PublicReadServer }
     }
   },
 });
+
+// --- the public publication service -------------------------------------
+
+// A second runtime: `SIDESHOW_ROLE=public` serves createPublicApp, which has
+// none of the private workspace's routes. Its owner API is how a publication,
+// its snapshot and its share links get seeded — the same server-to-server path
+// the private control plane uses.
+export const PUBLIC_OWNER_TOKEN = "e2e-owner-token";
+
+export type PublicServer = { url: string; ownerToken: string };
+
+export const publicationTest = base.extend<{ publicServer: PublicServer }>({
+  // oxlint-disable-next-line no-empty-pattern
+  publicServer: async ({}, use) => {
+    const server = await startSideshowServer({
+      SIDESHOW_ROLE: "public",
+      SIDESHOW_OWNER_TOKEN: PUBLIC_OWNER_TOKEN,
+      SIDESHOW_VISITOR_SECRET: "e2e-visitor-secret",
+    });
+    try {
+      await use({ url: server.url, ownerToken: PUBLIC_OWNER_TOKEN });
+    } finally {
+      server.stop();
+    }
+  },
+});
+
+/** One authenticated call against the public runtime's owner API. */
+export async function owner<T = unknown>(
+  server: PublicServer,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await fetch(`${server.url}${path}`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${server.ownerToken}`,
+    },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+  });
+  if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status} ${await res.text()}`);
+  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+}
+
+export interface SeededPublication {
+  publicationId: string;
+  snapshotId: string;
+  slug: string;
+  linkId: string;
+  url: string;
+}
+
+/** Publish one snapshot and mint a share link for it. */
+export async function seedPublication(
+  server: PublicServer,
+  opts: {
+    title?: string;
+    identity?: unknown;
+    items: unknown[];
+    assetIds?: string[];
+    link?: Record<string, unknown>;
+  },
+): Promise<SeededPublication> {
+  const publication = await owner<{ id: string }>(server, "POST", "/api/owner/publications", {
+    kind: "post",
+    title: opts.title ?? "Quarterly report",
+    ...(opts.identity !== undefined && { identity: opts.identity }),
+  });
+  const snapshot = await owner<{ id: string }>(
+    server,
+    "POST",
+    `/api/owner/publications/${publication.id}/snapshots`,
+    { items: opts.items, ...(opts.assetIds && { assetIds: opts.assetIds }) },
+  );
+  const link = await owner<{ id: string; slug: string }>(
+    server,
+    "POST",
+    `/api/owner/publications/${publication.id}/links`,
+    opts.link ?? {},
+  );
+  return {
+    publicationId: publication.id,
+    snapshotId: snapshot.id,
+    slug: link.slug,
+    linkId: link.id,
+    url: `${server.url}/v/${link.slug}`,
+  };
+}
+
+/** Upload one asset to the public runtime so a snapshot can pin it. */
+export async function uploadPublicAsset(
+  server: PublicServer,
+  body: { data: string; contentType: string; filename?: string },
+): Promise<{ id: string }> {
+  return owner<{ id: string }>(server, "POST", "/api/owner/assets", body);
+}
 
 export { expect };
 

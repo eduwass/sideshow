@@ -3079,6 +3079,44 @@ iframe {
   color: var(--muted);
   margin: 0 0 10px;
 }
+.pubs-preview-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+/* Deliberately close to the public page's own identity strip, so what the
+   owner approves here is what a reader gets. */
+.pubs-identity-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+.pubs-identity-avatar {
+  display: block;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--border);
+  flex: none;
+}
+.pubs-identity-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pubs-identity-link {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
 .pubs-form {
   background: var(--panel);
   border: 0.5px solid var(--border);
