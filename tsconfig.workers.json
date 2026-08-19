@@ -8,6 +8,7 @@
     "server/app.ts",
     "server/events.ts",
     "server/mcpHttp.ts",
+    "server/publicApp.ts",
     "server/richRender.ts",
     "server/sqlStore.ts",
     "server/surfacePage.ts",

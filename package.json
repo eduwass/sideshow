@@ -93,6 +93,8 @@
     "clean:dist": "node scripts/clean-dist.ts",
     "build": "npm run clean:dist && tsc -p tsconfig.build.json && npm run build:viewer && npm run build:embed",
     "deploy": "npm run build:viewer && wrangler deploy",
+    "deploy:public": "wrangler deploy --config wrangler.public.jsonc",
+    "dev:public": "wrangler dev --config wrangler.public.jsonc",
     "dev:cloud": "npm run build:viewer && wrangler dev",
     "prepack": "npm run build",
     "prepare": "simple-git-hooks && npm run build",
@@ -106,6 +108,7 @@
     "ansi_up": "^6.0.6",
     "hono": "^4.13.1",
     "markdown-it": "^14.2.0",
+    "scrypt-js": "^3.0.1",
     "shiki": "^4.2.0",
     "zod": "^3.24.0"
   },

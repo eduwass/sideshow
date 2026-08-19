@@ -14,6 +14,7 @@ import {
   viewerPostView,
   type Feedback,
 } from "./apiViews.ts";
+import type { DestinationConfig } from "./destination.ts";
 import { EventBus, type FeedEvent } from "./events.ts";
 import { kitSummaries } from "./kits.ts";
 import { registerMcp } from "./mcpHttp.ts";
@@ -189,6 +190,11 @@ export interface AppOptions {
   // connections before new ones are rejected with 503. Bounds a connection flood
   // on publicRead workspaces; defaults to DEFAULT_MAX_HOLD_CONNECTIONS.
   maxHoldConnections?: number;
+  // The one public publication service this workspace publishes to
+  // (docs/adr/0001). Present only on the private control plane. The bearer
+  // token inside it stays server-side: no route returns it and the viewer never
+  // receives it.
+  destination?: DestinationConfig;
 }
 
 export interface LatestRelease {
@@ -287,6 +293,7 @@ export function createApp({
   fetchLatestRelease,
   onEvent,
   maxHoldConnections = DEFAULT_MAX_HOLD_CONNECTIONS,
+  destination,
 }: AppOptions) {
   const app = new Hono();
   // `?key=` bootstraps cookie auth, so never let a board URL disclose that
@@ -1013,6 +1020,13 @@ export function createApp({
   // Opt-in html kits available on this workspace (id, label, summary, classes) —
   // for discovery (`sideshow kits`); the CSS/JS payloads are server-only.
   app.get("/api/kits", (c) => c.json(kitSummaries()));
+
+  // Where this workspace publishes to, for the viewer's share menu. Reports
+  // only whether a destination is configured and its origin — never the write
+  // token, which the browser must never hold.
+  app.get("/api/publish/destination", (c) =>
+    c.json({ configured: !!destination, origin: destination?.origin ?? null }),
+  );
 
   // --- theme (one workspace-level setting) ---
 

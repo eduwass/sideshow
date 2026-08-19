@@ -4,6 +4,9 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "./app.ts";
+import { resolveDestination } from "./destination.ts";
+import { createPublicApp } from "./publicApp.ts";
+import { privateBindingCheck, resolveRole } from "./role.ts";
 import { migrateLegacyDataDir } from "./migrateDataDir.ts";
 import { SqlStore } from "./sqlStore.ts";
 import { createSqliteStorage, migrateJsonToSqlite } from "./sqliteStorage.ts";
@@ -26,6 +29,10 @@ const [viewerHtml, guideMarkdown, setupText, agentHowtoText, pkgJson] = await Pr
   readFile(join(root, "guide", "AGENT_HOWTO.md"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
 ]);
+
+// Which deployment this process is. Anything but the exact string "public"
+// resolves to the private control plane, so a typo can only fail closed.
+const role = resolveRole(process.env.SIDESHOW_ROLE);
 
 const pr = process.env.SIDESHOW_PUBLIC_READ;
 const publicRead = pr === "session" || pr === "full" ? pr : undefined;
@@ -68,20 +75,6 @@ if (process.env.SIDESHOW_STORE === "json") {
   );
 }
 
-const app = createApp({
-  store,
-  viewerHtml,
-  guideMarkdown,
-  setupText,
-  agentHowtoText,
-  authToken: process.env.SIDESHOW_TOKEN,
-  publicRead,
-  // SIDESHOW_VERSION fakes the running version (manual testing of the
-  // notice); set it to the empty string to disable the update check
-  version: process.env.SIDESHOW_VERSION ?? (JSON.parse(pkgJson) as { version: string }).version,
-  upgradeCommand: "npm install -g sideshow",
-});
-
 const port = Number(process.env.PORT ?? 8228);
 // SIDESHOW_HOST (or `serve --host`) restricts the listener to one address.
 // Unset keeps the previous behaviour — node's default, every interface — because
@@ -90,13 +83,63 @@ const port = Number(process.env.PORT ?? 8228);
 // is stronger than the token, which is a single shared secret by design.
 const hostname = process.env.SIDESHOW_HOST || undefined;
 
-serve({ fetch: app.fetch, port, hostname }, (info) => {
-  // Report the address actually bound. Printing "localhost" unconditionally hid
-  // the fact that the default listens on every interface.
-  const shown = hostname ?? "localhost";
-  const authority = shown.includes(":") ? `[${shown}]` : shown;
-  console.log(
-    `sideshow listening on http://${authority}:${info.port}` +
-      (hostname ? "" : " (all interfaces — set SIDESHOW_HOST to restrict)"),
-  );
-});
+if (role === "public") {
+  // The public publication service: a separate app with only publication
+  // reads, password verification, confirmed opens and scoped feedback. None of
+  // the private workspace API, MCP or owner controls exist on it.
+  const ownerToken = process.env.SIDESHOW_OWNER_TOKEN;
+  const visitorSecret = process.env.SIDESHOW_VISITOR_SECRET;
+  if (!ownerToken || !visitorSecret) {
+    console.error("SIDESHOW_ROLE=public needs SIDESHOW_OWNER_TOKEN and SIDESHOW_VISITOR_SECRET");
+    process.exit(1);
+  }
+  const publicApp = createPublicApp({ store, ownerToken, visitorSecret });
+  serve({ fetch: publicApp.fetch, port, hostname }, (info) => {
+    console.log(`sideshow public publication service listening on port ${info.port}`);
+  });
+} else {
+  startPrivateServer();
+}
+
+function startPrivateServer() {
+  const binding = privateBindingCheck({
+    hostname,
+    token: process.env.SIDESHOW_TOKEN,
+    requireLoopback: process.env.SIDESHOW_REQUIRE_LOOPBACK === "1",
+  });
+  if (!binding.ok) {
+    console.error(`sideshow refused to start: ${binding.message}`);
+    process.exit(1);
+  }
+  if (binding.message) console.warn(`[sideshow] ${binding.message}`);
+
+  const app = createApp({
+    store,
+    viewerHtml,
+    guideMarkdown,
+    setupText,
+    agentHowtoText,
+    authToken: process.env.SIDESHOW_TOKEN,
+    publicRead,
+    // SIDESHOW_VERSION fakes the running version (manual testing of the
+    // notice); set it to the empty string to disable the update check
+    version: process.env.SIDESHOW_VERSION ?? (JSON.parse(pkgJson) as { version: string }).version,
+    upgradeCommand: "npm install -g sideshow",
+    destination:
+      resolveDestination(
+        process.env.SIDESHOW_DESTINATION_URL,
+        process.env.SIDESHOW_DESTINATION_TOKEN,
+      ) ?? undefined,
+  });
+
+  serve({ fetch: app.fetch, port, hostname }, (info) => {
+    // Report the address actually bound. Printing "localhost" unconditionally hid
+    // the fact that the default listens on every interface.
+    const shown = hostname ?? "localhost";
+    const authority = shown.includes(":") ? `[${shown}]` : shown;
+    console.log(
+      `sideshow listening on http://${authority}:${info.port}` +
+        (hostname ? "" : " (all interfaces — set SIDESHOW_HOST to restrict)"),
+    );
+  });
+}
