@@ -226,14 +226,14 @@ test("/s/:id bare surface route shows the standalone full-page surface", async (
   await page.goto(`${server.url}/s/${s.id}`);
 
   // A bare direct link is the full-page standalone view: just that one surface,
-  // no sidebar / session feed / comments, with a sideshow watermark beneath.
+  // no sidebar / session feed / comments, and no product watermark (issue #11).
   await expect(page.locator("#standalone")).toHaveCount(1);
   await expect(page.locator("#sessionList")).toHaveCount(0);
   await expect(page.locator("#standalone .card[data-id]")).toHaveCount(1);
   await expect(page.locator(`.card[data-id="${s.id}"] .card-title`)).toHaveText("Solo");
   // No comment thread chrome in standalone mode.
   await expect(page.locator(".card .thread")).toHaveCount(0);
-  await expect(page.locator(".standalone-foot a")).toHaveAttribute("href", "https://sideshow.sh");
+  await expect(page.locator(".standalone-foot")).toHaveCount(0);
 
   // It stays on the canonical share URL — it does not rewrite into a
   // session-scoped deep link the way the in-feed deep link does.

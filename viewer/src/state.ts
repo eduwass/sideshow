@@ -15,7 +15,7 @@ import {
   type ViewerPost,
 } from "./api.ts";
 import { host, root, type Route } from "./host.ts";
-import { applyTheme } from "./theme.ts";
+import { applyTheme, refreshTheme } from "./theme.ts";
 import { compactViewerPost, viewerPostFromDetail } from "./viewerPost.ts";
 
 // --- URL routing ---
@@ -511,6 +511,8 @@ interface FeedEvent {
   id: string;
   sessionId?: string;
   surfaceId?: string | null;
+  // theme-changed only: the custom-theme revision (see server/customTheme.ts).
+  revision?: number;
 }
 
 const WS_HEARTBEAT_MS = 30_000;
@@ -574,7 +576,11 @@ async function handleFeedData(data: string) {
   // marks the session unread, which also badges the tab title
   const away = e.sessionId != null && (e.sessionId !== selected() || document.hidden);
   if (e.type === "theme-changed") {
-    applyTheme(e.id);
+    // A revision means a custom theme was pushed or removed: its palette lives
+    // server-side under an unchanged id, so re-read it instead of re-applying
+    // what this tab already has.
+    if (e.revision != null) await refreshTheme();
+    else applyTheme(e.id);
   } else if (e.type.startsWith("session-")) {
     await refreshSessions();
   } else if (e.type === "post-created" || e.type === "post-updated") {

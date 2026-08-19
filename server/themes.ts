@@ -395,9 +395,16 @@ export const THEMES: Theme[] = [
 
 export const DEFAULT_THEME_ID = "github";
 
-export function themeById(id: string | null | undefined): Theme {
+// A workspace may also carry ONE runtime-registered theme, pushed by an external
+// theme engine (see customTheme.ts). It is passed in rather than held in module
+// state: the same process runs many workspaces in tests and in the embeddable
+// `sideshow/server` package, so a registry global would leak one workspace's
+// palette into another's render.
+export function themeById(id: string | null | undefined, custom?: Theme | null): Theme {
+  if (custom && custom.id === id) return custom;
   return THEMES.find((t) => t.id === id) ?? THEMES[0];
 }
 
 // Compact descriptor for the picker (avoids shipping full palettes to list).
-export const themeOptions = () => THEMES.map((t) => ({ id: t.id, label: t.label }));
+export const themeOptions = (custom?: Theme | null) =>
+  [...THEMES, ...(custom ? [custom] : [])].map((t) => ({ id: t.id, label: t.label }));

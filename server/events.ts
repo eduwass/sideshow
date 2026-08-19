@@ -11,7 +11,10 @@ export type FeedEvent =
     }
   | { type: "comment-deleted"; id: string; sessionId: string }
   // Workspace theme changed; `id` is the new theme id. Other open tabs re-theme.
-  | { type: "theme-changed"; id: string }
+  // `revision` is set only for the custom theme (customTheme.ts), whose CONTENT
+  // can change while its id stays "custom" — it tells a listening viewer that
+  // re-applying the same id is not a no-op.
+  | { type: "theme-changed"; id: string; revision?: number }
   // Session-scoped agent trace gained steps (synced in a batch). Carries only
   // the new total so the viewer refetches once per batch, not once per step.
   | { type: "trace-updated"; sessionId: string; count: number };
