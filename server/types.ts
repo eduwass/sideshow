@@ -1,5 +1,7 @@
 // Shared data model — no runtime imports, safe for any platform.
 
+import type { PublicationStore } from "./publicationTypes.ts";
+
 export interface Session {
   id: string;
   agent: string;
@@ -408,6 +410,12 @@ export interface Store {
   // Whether any live surface (current or historical version) references this
   // asset id. Drives the optimistic-read wait and reference-aware deletion.
   isAssetReferenced(id: string): Promise<boolean>;
+
+  // Public-sharing storage, present only on backends that can host
+  // publications (the SQLite store, on both Node and the Durable Object).
+  // Absent means this deployment cannot publish; the app reports that rather
+  // than half-supporting it.
+  publications?: PublicationStore;
 }
 
 // The slice of a Durable Object's `SqlStorage` that SqlStore actually uses.

@@ -1,3 +1,4 @@
+import { SqlPublicationStore } from "./sqlPublicationStore.ts";
 import {
   type Asset,
   type WorkspaceSnapshot,
@@ -43,9 +44,14 @@ export class SqlStore implements Store {
   // id once referenced stays referenced until the whole post (and its history)
   // is deleted — at which point we invalidate and recompute from scratch.
   private assetRefCache: Set<string> | undefined;
+  // Public-sharing tables live in the same database, behind their own class.
+  // Snapshots pin assets independently of the rolling post history, so the
+  // asset-reference checks below consult it too.
+  readonly publications: SqlPublicationStore;
 
   constructor(sql: SqlStorage) {
     this.sql = sql;
+    this.publications = new SqlPublicationStore(sql);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, title TEXT, cwd TEXT,
@@ -637,6 +643,18 @@ export class SqlStore implements Store {
     this.assetRefCache = undefined;
   }
 
+  // Snapshot pins, read fresh on each eviction pass. Publishing is rare compared
+  // with asset writes, and the table is small, so this stays a plain query
+  // rather than another cache to keep in sync.
+  private snapshotAssetIds(): Set<string> {
+    return new Set(
+      this.sql
+        .exec("SELECT DISTINCT assetId FROM snapshot_assets")
+        .toArray()
+        .map((r) => r.assetId as string),
+    );
+  }
+
   async putAsset(input: CreateAssetInput) {
     if (!(await this.getSession(input.sessionId))) return null;
     // Content-addressed: identical bytes dedupe to the existing blob (idempotent
@@ -648,6 +666,7 @@ export class SqlStore implements Store {
       return (await this.getAsset(id))!;
     }
     const referenced = this.referencedAssetIds();
+    const pinned = this.snapshotAssetIds();
     const candidates = this.sql
       .exec("SELECT id, byteLength, lastAccessedAt FROM assets")
       .toArray()
@@ -655,7 +674,7 @@ export class SqlStore implements Store {
         id: r.id as string,
         byteLength: r.byteLength as number,
         lastAccessedAt: r.lastAccessedAt as string,
-        referenced: referenced.has(r.id as string),
+        referenced: referenced.has(r.id as string) || pinned.has(r.id as string),
       }));
     for (const id of selectEvictions(
       candidates,
@@ -724,8 +743,11 @@ export class SqlStore implements Store {
     return true;
   }
 
+  // A snapshot pin counts as a reference: a published snapshot is immutable, so
+  // its assets must outlive the post history that originally referenced them.
   async isAssetReferenced(id: string) {
-    return this.referencedAssetIds().has(id);
+    if (this.referencedAssetIds().has(id)) return true;
+    return this.publications.isSnapshotAsset(id);
   }
 
   // One-time bulk import to migrate another backend's data into this database
