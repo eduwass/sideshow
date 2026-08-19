@@ -2956,3 +2956,264 @@ iframe {
     flex: 1;
   }
 }
+
+/* Publications dashboard — the owner's view of what is on the public web and
+   who can still open it. Shares the settings-page column and the .publish-btn
+   button family so it reads as one surface with the publish dialog. */
+.foot-link {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--faint);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: not-allowed;
+}
+.pubs-loading,
+.pubs-empty,
+.pubs-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 10px 0;
+}
+.pubs-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 14px 0;
+}
+.pubs-warn {
+  color: var(--text);
+  background: var(--panel);
+  border-left: 2px solid var(--danger);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 4px 0 10px;
+  padding: 8px 10px;
+}
+.pubs-list {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+}
+.pubs-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.pubs-row:hover {
+  background: var(--hover);
+}
+.pubs-row-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.pubs-row-meta {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.pubs-kind {
+  color: var(--accent);
+}
+.pubs-detail-top {
+  position: relative;
+}
+.pubs-back {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.pubs-back:hover {
+  color: var(--text);
+}
+.pubs-field-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.pubs-input {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 0.5px solid var(--border-2);
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+.pubs-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.pubs-label .pubs-input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+.pubs-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.pubs-form {
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 10px 0;
+}
+.pubs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pubs-actions a.publish-btn {
+  text-decoration: none;
+  line-height: 1.6;
+}
+.publish-btn.danger {
+  color: var(--danger);
+}
+.pubs-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 14px;
+}
+.pubs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.pubs-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 6px 10px 6px 0;
+  border-bottom: 0.5px solid var(--border);
+}
+.pubs-table td {
+  vertical-align: top;
+  padding: 10px 10px 10px 0;
+  border-bottom: 0.5px solid var(--border);
+}
+.pubs-link.dead .pubs-url {
+  text-decoration: line-through;
+  color: var(--faint);
+}
+.pubs-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.pubs-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-top: 4px;
+}
+.pubs-access {
+  display: block;
+  color: var(--muted);
+}
+.pubs-state {
+  font-weight: 600;
+}
+.pubs-state.active {
+  color: var(--accent);
+}
+.pubs-state.expired,
+.pubs-state.revoked {
+  color: var(--danger);
+}
+.pubs-subrow td {
+  background: var(--panel);
+}
+.pubs-snaps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12.5px;
+}
+.pubs-snaps li {
+  padding: 8px 0;
+  border-bottom: 0.5px solid var(--border);
+}
+.pubs-snaps li:last-child {
+  border-bottom: none;
+}
+.pubs-snap-rev {
+  font-weight: 600;
+}
+.pubs-snaps li.current .pubs-snap-rev {
+  color: var(--accent);
+}
+.pubs-snap-meta {
+  display: block;
+  color: var(--muted);
+  margin-top: 2px;
+}
+/* Phone width: the table stops being a grid and each row becomes a small
+   labelled block, so nothing has to scroll sideways to be readable. */
+@media (max-width: 700px) {
+  .pubs-table,
+  .pubs-table tbody,
+  .pubs-table tr,
+  .pubs-table td {
+    display: block;
+    width: 100%;
+  }
+  .pubs-table thead {
+    display: none;
+  }
+  .pubs-table tr.pubs-link {
+    border: 0.5px solid var(--border);
+    border-radius: 10px;
+    padding: 4px 10px;
+    margin-bottom: 10px;
+  }
+  .pubs-table td {
+    border-bottom: none;
+    padding: 6px 0;
+  }
+  .pubs-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--faint);
+    margin-bottom: 2px;
+  }
+  .pubs-subrow td::before {
+    content: none;
+  }
+}

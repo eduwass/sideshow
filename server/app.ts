@@ -1053,6 +1053,97 @@ export function createApp({
     return c.json({ error: message }, 502);
   };
 
+  // --- owner views of the public service ---
+  //
+  // Publications live only in the public workspace (docs/adr/0001), so the
+  // dashboard reads and writes them through here. These are explicit named
+  // routes rather than a pass-through proxy: a generic proxy would let anything
+  // reachable in the browser borrow the destination's write token for an
+  // arbitrary path.
+  const throughDestination = async (c: Context, call: () => Promise<unknown>) => {
+    if (!destinationClient) return c.json({ error: "no publication destination" }, 503);
+    try {
+      const result = await call();
+      return result === undefined ? c.body(null, 204) : c.json(result as object);
+    } catch (err) {
+      if (err instanceof DestinationError && err.status === 404) {
+        return c.json({ error: "not found" }, 404);
+      }
+      return destinationFailure(c, err);
+    }
+  };
+
+  const owner = (path: string) => `/api/owner${path}`;
+  const linkPath = (id: string) => owner(`/links/${encodeURIComponent(id)}`);
+  const publicationPath = (id: string) => owner(`/publications/${encodeURIComponent(id)}`);
+
+  app.get("/api/publications", (c) =>
+    throughDestination(c, async () => ({
+      origin: destinationClient!.origin,
+      publications: await destinationClient!.request(owner("/publications")),
+    })),
+  );
+
+  app.get("/api/publications/:id", (c) =>
+    throughDestination(c, async () => ({
+      origin: destinationClient!.origin,
+      ...(await destinationClient!.request<object>(publicationPath(c.req.param("id")))),
+    })),
+  );
+
+  app.patch("/api/publications/:id", async (c) => {
+    const body = await c.req.text();
+    return throughDestination(c, () =>
+      destinationClient!.request(publicationPath(c.req.param("id")), {
+        method: "PATCH",
+        body,
+      }),
+    );
+  });
+
+  app.delete("/api/publications/:id", (c) =>
+    throughDestination(c, () =>
+      destinationClient!
+        .request(publicationPath(c.req.param("id")), { method: "DELETE" })
+        .then(() => undefined),
+    ),
+  );
+
+  app.post("/api/publications/:id/links", async (c) => {
+    const body = await c.req.text();
+    return throughDestination(c, () =>
+      destinationClient!.request(`${publicationPath(c.req.param("id"))}/links`, {
+        method: "POST",
+        body: body || "{}",
+      }),
+    );
+  });
+
+  app.patch("/api/publications/links/:linkId", async (c) => {
+    const body = await c.req.text();
+    return throughDestination(c, () =>
+      destinationClient!.request(linkPath(c.req.param("linkId")), { method: "PATCH", body }),
+    );
+  });
+
+  app.post("/api/publications/links/:linkId/duplicate", async (c) => {
+    const body = await c.req.text();
+    return throughDestination(c, () =>
+      destinationClient!.request(`${linkPath(c.req.param("linkId"))}/duplicate`, {
+        method: "POST",
+        body: body || "{}",
+      }),
+    );
+  });
+
+  app.delete("/api/publications/links/:linkId", (c) =>
+    throughDestination(c, () =>
+      destinationClient!
+        .request(linkPath(c.req.param("linkId")), { method: "DELETE" })
+        .then(() => undefined),
+    ),
+  );
+
   app.post("/api/publish/post", async (c) => {
     if (!destinationClient) return c.json({ error: "no publication destination" }, 503);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
