@@ -39,29 +39,6 @@ export function CommentIcon() {
   );
 }
 
-export function SessionsIcon() {
-  return (
-    <Icon>
-      <path d="M8 6h13" />
-      <path d="M8 12h13" />
-      <path d="M8 18h13" />
-      <path d="M3 6h.01" />
-      <path d="M3 12h.01" />
-      <path d="M3 18h.01" />
-    </Icon>
-  );
-}
-
-export function MoreIcon() {
-  return (
-    <Icon>
-      <circle cx="5" cy="12" r="1" />
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="19" cy="12" r="1" />
-    </Icon>
-  );
-}
-
 export function SettingsIcon() {
   return (
     <Icon>

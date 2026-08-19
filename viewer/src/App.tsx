@@ -37,14 +37,11 @@ import { PublishSessionDialog } from "./PublishSessionDialog.tsx";
 import { SessionTimeline } from "./SessionTimeline.tsx";
 import { StreamSkeleton } from "./Skeleton.tsx";
 import {
-  CommentIcon,
-  MoreIcon,
   MoonIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PlugIcon,
   PublicationsIcon,
-  SessionsIcon,
   SettingsIcon,
   ShareIcon,
   StreamIcon,
@@ -482,41 +479,6 @@ export default function App() {
                 </Switch>
               </slot>
             </main>
-            <Show when={!streamMode()}>
-              <nav class="mobile-dock" aria-label="Mobile navigation">
-                <button type="button" title="Sessions" onClick={() => setNavOpen(true)}>
-                  <SessionsIcon />
-                  <span>Sessions</span>
-                </button>
-                <button
-                  type="button"
-                  title="Feedback"
-                  classList={{ active: fullPage() === "feedback" }}
-                  onClick={() => {
-                    history.pushState(null, "", appPath("/feedback"));
-                    setFullPage("feedback");
-                    setMoreOpen(false);
-                    setNavOpen(false);
-                  }}
-                >
-                  <CommentIcon />
-                  <span>Feedback</span>
-                </button>
-                <button
-                  type="button"
-                  title="More"
-                  classList={{ active: moreOpen() }}
-                  aria-expanded={moreOpen()}
-                  onClick={() => {
-                    setNavOpen(false);
-                    setMoreOpen(!moreOpen());
-                  }}
-                >
-                  <MoreIcon />
-                  <span>More</span>
-                </button>
-              </nav>
-            </Show>
           </div>
           <Show when={moreOpen()}>
             <div class="more-panel" role="dialog" aria-label="Settings and links">
@@ -674,6 +636,10 @@ async function onBridgeMessage(ev: MessageEvent) {
     text?: unknown;
     url?: string;
     key?: string;
+    metaKey?: boolean;
+    altKey?: boolean;
+    ctrlKey?: boolean;
+    shiftKey?: boolean;
   } | null;
   if (!d || !d.__sideshow) return;
   // Every host-affecting message must come from a frame the viewer actually
@@ -689,6 +655,19 @@ async function onBridgeMessage(ev: MessageEvent) {
     // A post iframe forwarded the session-switch shortcut because focus was
     // inside it (see server/surfacePage.ts). Mirror the parent keydown handler.
     void selectAdjacent(d.key === "ArrowUp" ? -1 : 1);
+    return;
+  }
+  if (d.type === "navigation-key") {
+    if (!isOwnFrame(ev.source)) return;
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: d.key,
+        metaKey: d.metaKey,
+        altKey: d.altKey,
+        ctrlKey: d.ctrlKey,
+        shiftKey: d.shiftKey,
+      }),
+    );
     return;
   }
   // Resolve the source post + iframe by contentWindow — a post may own

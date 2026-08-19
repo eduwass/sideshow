@@ -177,14 +177,24 @@ document.addEventListener('click', function (e) {
   var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
   if (a && /^https?:/.test(a.href)) { e.preventDefault(); window.openLink(a.href); }
 });
-// Cmd+Option+Up/Down switches sessions in the sidebar, but keydowns fire in
-// whichever document holds focus — once the user clicks into a surface, this
-// sandboxed iframe swallows them. Forward just that combo to the host.
+// Forward workspace navigation shortcuts when a sandboxed surface owns focus.
+// Plain arrows remain native so embedded content still scrolls normally.
 document.addEventListener('keydown', function (e) {
-  if (!e.metaKey || !e.altKey || e.ctrlKey || e.shiftKey) return;
-  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  var sessionStep = e.metaKey && e.altKey && !e.ctrlKey && !e.shiftKey &&
+    (e.key === 'ArrowUp' || e.key === 'ArrowDown');
+  var directSession = e.metaKey && !e.altKey && !e.ctrlKey && !e.shiftKey && /^[1-9]$/.test(e.key);
+  var dismiss = e.key === 'Escape';
+  if (!sessionStep && !directSession && !dismiss) return;
   e.preventDefault();
-  parent.postMessage({ __sideshow: true, type: 'switch-session', key: e.key }, '*');
+  parent.postMessage({
+    __sideshow: true,
+    type: 'navigation-key',
+    key: e.key,
+    metaKey: e.metaKey,
+    altKey: e.altKey,
+    ctrlKey: e.ctrlKey,
+    shiftKey: e.shiftKey
+  }, '*');
 });
 // Report content height to the parent so it can size this iframe, while
 // breaking a feedback loop that can peg a CPU core.
