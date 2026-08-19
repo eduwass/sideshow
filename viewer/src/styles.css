@@ -619,7 +619,7 @@ main:focus-visible {
   border-bottom: 0.5px solid var(--border);
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 7px;
 }
 #sessTitle {
   font-size: 16px;
@@ -2602,6 +2602,7 @@ iframe {
   border: 0.5px solid var(--border);
   border-radius: 999px;
   overflow: visible;
+  background: var(--surface);
 }
 .view-toggle button {
   font-family: inherit;
@@ -2616,13 +2617,23 @@ iframe {
   padding: 7px;
   cursor: pointer;
 }
+.view-toggle button:first-child {
+  border-radius: 999px 0 0 999px;
+}
+.view-toggle button:last-child {
+  border-radius: 0 999px 999px 0;
+}
+.view-toggle button + button {
+  border-left: 0.5px solid var(--border);
+}
 .view-toggle svg {
   width: 16px;
   height: 16px;
 }
 .view-toggle button.on {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
   color: var(--accent);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   .card-head .update-dot {
@@ -2975,7 +2986,7 @@ iframe {
   width: 32px;
   height: 30px;
   color: var(--muted);
-  background: none;
+  background: var(--surface);
   border: 0.5px solid var(--border);
   border-radius: 999px;
   padding: 7px;
@@ -2984,6 +2995,10 @@ iframe {
 .publish-session svg {
   width: 16px;
   height: 16px;
+}
+.publish-session:active:not(:disabled),
+.view-toggle button:active {
+  transform: scale(0.94);
 }
 .publish-session:hover:not(:disabled) {
   color: var(--text);
