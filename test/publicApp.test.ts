@@ -1664,6 +1664,30 @@ test("a share link defaults to a generated slug and never exposes a password has
 
 const UPLOAD_BYTES = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
 
+test("owner asset uploads may exceed the global public body cap; other routes may not", async () => {
+  const { app, publication } = await seed();
+
+  // A real screenshot: well over MAX_PUBLIC_BODY_BYTES once base64-encoded,
+  // well under MAX_ASSET_BYTES. Before the exemption this was rejected by the
+  // global limiter before the asset route ever saw it.
+  const big = new Uint8Array(MAX_PUBLIC_BODY_BYTES * 2).map((_, i) => i % 251);
+  const created = await ownerPost(app, "/api/owner/assets", {
+    data: encodeBase64(big),
+    contentType: "image/jpeg",
+  });
+  const createdBody = (await created.json()) as { id?: string; error?: string };
+  assert.equal(created.status, 201, createdBody.error);
+  assert.equal(createdBody.id, await hashAssetId(big));
+
+  // The cap still guards every other owner route.
+  const padded = await ownerPost(app, `/api/owner/publications/${publication.id}/snapshots`, {
+    title: "x".repeat(MAX_PUBLIC_BODY_BYTES + 1),
+    items: [],
+  });
+  assert.equal(padded.status, 413);
+  assert.deepEqual(await padded.json(), { error: "request body too large" });
+});
+
 test("owner asset uploads are content-addressed and unreachable until pinned", async () => {
   const { app, publication } = await seed();
 

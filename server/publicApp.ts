@@ -238,13 +238,18 @@ export function createPublicApp({ store, ownerToken, visitorSecret, now }: Publi
     return next();
   });
 
-  app.use(
-    "*",
-    bodyLimit({
-      maxSize: MAX_PUBLIC_BODY_BYTES,
-      onError: (c) => c.json({ error: "request body too large" }, 413),
-    }),
-  );
+  // Asset uploads are the one body that is legitimately larger than any
+  // control-plane request: the route carries its own MAX_ASSET_BYTES limit
+  // below, so the global cap must not run first and reject it. Everything
+  // else, visitor and owner alike, stays under the small cap.
+  const publicBodyLimit = bodyLimit({
+    maxSize: MAX_PUBLIC_BODY_BYTES,
+    onError: (c) => c.json({ error: "request body too large" }, 413),
+  });
+  app.use("*", (c, next) => {
+    if (c.req.method === "POST" && c.req.path === "/api/owner/assets") return next();
+    return publicBodyLimit(c, next);
+  });
 
   app.get("/robots.txt", (c) => c.text("User-agent: *\nDisallow: /\n"));
 
