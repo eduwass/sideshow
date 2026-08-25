@@ -576,10 +576,21 @@ export function surfacesByteLength(surfaces: Surface[]): number {
 // Used to keep referenced assets out of eviction's first wave. Note: assets
 // embedded by raw URL inside html markup are invisible here — touch-on-serve
 // keeps those warm instead.
+// Asset ids are the SHA-256 of the bytes (64 hex chars), so a `/a/<id>` URL
+// embedded in html or markdown is unambiguous and can be collected by regex
+// without parsing markup. Agents are told they may reference an asset either
+// way (see ImageSurface), so both paths must count as a reference: publishing
+// copies these assets to the public worker, and eviction keeps them alive.
+const EMBEDDED_ASSET_REF = /\/a\/([0-9a-f]{64})\b/g;
+
 export function collectAssetIds(surfaces: Surface[], out: Set<string>): void {
   for (const p of surfaces) {
     if (p.kind === "image") out.add(p.assetId);
     else if (p.kind === "trace" && p.assetId) out.add(p.assetId);
+    else if (p.kind === "html" || p.kind === "markdown") {
+      const text = p.kind === "html" ? p.html : p.markdown;
+      for (const m of text.matchAll(EMBEDDED_ASSET_REF)) out.add(m[1]);
+    }
   }
 }
 

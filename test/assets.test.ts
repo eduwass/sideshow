@@ -52,9 +52,20 @@ test("selectEvictions falls back to referenced assets only as a last resort", ()
 
 // --- collectAssetIds ---
 
-test("collectAssetIds gathers image and trace asset ids, ignoring html/diff", () => {
+test("collectAssetIds gathers image and trace asset ids, plus /a/<id> embeds in html and markdown", () => {
   const surfaces: Surface[] = [
-    { kind: "html", html: "<img src=/a/raw>" }, // raw-url embeds are invisible here
+    {
+      kind: "html",
+      html: '<img src="/a/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"> <img src="http://localhost:4250/a/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">',
+    },
+    {
+      kind: "markdown",
+      markdown: "![frame](/a/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+    },
+    {
+      kind: "html",
+      html: "<img src=/a/raw> /a/ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    }, // not content-addressed ids -> ignored
     { kind: "diff", patch: "x" },
     { kind: "image", assetId: "img1" },
     { kind: "trace", assetId: "tr1", steps: [{ label: "s" }] },
@@ -62,7 +73,12 @@ test("collectAssetIds gathers image and trace asset ids, ignoring html/diff", ()
   ];
   const out = new Set<string>();
   collectAssetIds(surfaces, out);
-  assert.deepEqual([...out].sort(), ["img1", "tr1"]);
+  assert.deepEqual([...out].sort(), [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "img1",
+    "tr1",
+  ]);
 });
 
 // --- surfacesByteLength ---
