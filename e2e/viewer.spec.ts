@@ -788,10 +788,13 @@ test("Cmd+B toggles the desktop sidebar", async ({ page, server }) => {
   await expect(aside).toHaveCSS("width", "40px");
   await page.keyboard.press("Meta+b");
   await expect(aside).toHaveCSS("width", "248px");
+  // `[` collapses and focuses the stream; `[` again expands onto the session
   await page.keyboard.press("[");
   await expect(aside).toHaveCSS("width", "40px");
+  await expect(page.locator("main")).toBeFocused();
   await page.keyboard.press("[");
   await expect(aside).toHaveCSS("width", "248px");
+  await expect(page.locator(".sess.sel")).toBeFocused();
 
   // ← from the stream reopens a collapsed sidebar and lands on the session
   await page.keyboard.press("[");
@@ -800,6 +803,16 @@ test("Cmd+B toggles the desktop sidebar", async ({ page, server }) => {
   await page.keyboard.press("ArrowLeft");
   await expect(aside).toHaveCSS("width", "248px");
   await expect(page.locator(".sess.sel")).toBeFocused();
+
+  // → back into the same session must not rebuild the stream
+  const card = await page.locator(".card:not(#whatsNew)").first().elementHandle();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("main")).toBeFocused();
+  await page.waitForTimeout(300);
+  expect(await card!.evaluate((el) => el.isConnected)).toBe(true);
+  await page.locator(".sess.sel").click();
+  await page.waitForTimeout(300);
+  expect(await card!.evaluate((el) => el.isConnected)).toBe(true);
 });
 
 test("the desktop sidebar can collapse to a minimal rail and expand again", async ({

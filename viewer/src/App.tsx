@@ -113,6 +113,15 @@ function fullPageFromPath(): FullPageView {
 }
 const [fullPage, setFullPage] = createSignal<FullPageView>(fullPageFromPath());
 
+// Open a session from the sidebar (click, Enter/→ on its row, ⌘1-9). Re-opening
+// the one already on screen only leaves any full-page view and closes the
+// drawer: it must not rebuild and refetch the stream the user is looking at.
+function openSession(id: string) {
+  setFullPage(null);
+  setNavOpen(false);
+  if (id !== selected()) void select(id);
+}
+
 // Stream-only layout: no sidebar, session list, or session chrome — just the
 // current session's stream. Driven by the host's `layout` (cloud embed) or the
 // self-hosted public-read "session" link (see api.ts `layoutMode`).
@@ -277,8 +286,21 @@ export default function App() {
       const bare = !e.metaKey && !e.ctrlKey && !e.altKey;
       if (!typing && (sidebarKey || (bare && e.key === "["))) {
         e.preventDefault();
-        if (window.matchMedia("(max-width: 700px)").matches) setNavOpen(!navOpen());
-        else setSidebarCollapsed(!sidebarCollapsed());
+        if (window.matchMedia("(max-width: 700px)").matches) {
+          setNavOpen(!navOpen());
+          return;
+        }
+        // Keep the keyboard usable either way: collapsing hands focus to the
+        // stream, expanding lands on the selected session.
+        const collapse = !sidebarCollapsed();
+        setSidebarCollapsed(collapse);
+        if (collapse) focusMain();
+        else
+          requestAnimationFrame(() =>
+            [...root().querySelectorAll<HTMLElement>(".sess[data-id]")]
+              .find((item) => item.dataset.id === selected())
+              ?.focus(),
+          );
         return;
       }
       if (!typing && bare && e.key === "]" && tocAvailable()) {
@@ -298,9 +320,7 @@ export default function App() {
         const session = sessions[Number(e.key) - 1];
         if (session) {
           e.preventDefault();
-          setFullPage(null);
-          select(session.id);
-          setNavOpen(false);
+          openSession(session.id);
           requestAnimationFrame(focusMain);
         }
         return;
@@ -784,9 +804,7 @@ function SessionItem(props: { session: SessionRow; shortcut: number; showShortcu
     items[(current + direction + items.length) % items.length]?.focus();
   };
   const open = () => {
-    setFullPage(null);
-    select(props.session.id);
-    setNavOpen(false);
+    openSession(props.session.id);
     requestAnimationFrame(focusMain);
   };
   return (
@@ -801,10 +819,7 @@ function SessionItem(props: { session: SessionRow; shortcut: number; showShortcu
       role="button"
       tabIndex={props.session.id === selected() ? 0 : -1}
       aria-current={props.session.id === selected() ? "true" : undefined}
-      onClick={() => {
-        setFullPage(null);
-        select(props.session.id);
-      }}
+      onClick={() => openSession(props.session.id)}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
