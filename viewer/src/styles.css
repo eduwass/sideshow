@@ -641,11 +641,12 @@ main {
   overflow-y: auto;
   min-width: 0;
 }
-main:focus {
-  outline: none;
-}
+/* The stream is focusable (keyboard scrolling, ←/→ to the sidebar and the
+   table of contents) but draws no ring: a frame around the whole pane read
+   as noise, and the focused card/list item carries the indicator instead. */
+main:focus,
 main:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--accent);
+  outline: none;
 }
 .session-head {
   position: sticky;
