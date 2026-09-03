@@ -1304,9 +1304,11 @@ export function createApp({
           itemTitle: item?.title ?? "Untitled",
           surfaceKind: surface?.kind ?? "unknown",
           // Served back through this private origin so the browser never needs
-          // the destination's token.
+          // the destination's token. Relative: the viewer is same-origin, and an
+          // absolute URL built from the server's own view of its origin (a proxy's
+          // http://127.0.0.1) would be mixed content inside an https viewer.
           surfaceUrl:
-            `${new URL(c.req.url).origin}${requestBasePath(c.req.raw)}/api/feedback/s/` +
+            `${requestBasePath(c.req.raw)}/api/feedback/s/` +
             `${encodeURIComponent(feedback.snapshotId)}/${feedback.anchor.itemIndex}/` +
             `${feedback.anchor.surfaceIndex}`,
           recipientLabel: link?.recipientLabel ?? null,
@@ -1397,7 +1399,13 @@ export function createApp({
       const wanted = new Set(ids);
       const rows = all.filter((row) => wanted.has(row.id));
       if (rows.length === 0) return c.json({ error: "not found" }, 404);
-      const entries = (await withOriginOf(c, rows)) as FeedbackPromptEntry[];
+      // The prompt leaves this origin (it is pasted to an agent), so its
+      // surface URLs are absolute, unlike the viewer's same-origin rows.
+      const origin = new URL(c.req.url).origin;
+      const entries = ((await withOriginOf(c, rows)) as FeedbackPromptEntry[]).map((entry) => ({
+        ...entry,
+        surfaceUrl: `${origin}${entry.surfaceUrl}`,
+      }));
       return c.json({ prompt: buildFeedbackPrompt(entries) });
     } catch (err) {
       return destinationFailure(c, err);

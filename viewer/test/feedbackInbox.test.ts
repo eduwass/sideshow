@@ -68,12 +68,15 @@ test("an author reads with an email only when one was given", () => {
   expect(feedbackAuthor(feedback({ email: "dana@x.test" }))).toBe("Dana <dana@x.test>");
 });
 
-test("the historical surface src carries the current theme and mode", () => {
+test("the historical surface src carries the current theme, mode and theme revision", () => {
+  expect(feedbackSurfaceSrc(entry(), "custom", "dark", 7)).toBe(
+    "/api/feedback/s/snap-1/0/0?theme=custom&mode=dark&trev=7",
+  );
   expect(feedbackSurfaceSrc(entry(), "gruvbox", "dark")).toBe(
-    "/api/feedback/s/snap-1/0/0?theme=gruvbox&mode=dark",
+    "/api/feedback/s/snap-1/0/0?theme=gruvbox&mode=dark&trev=0",
   );
   expect(feedbackSurfaceSrc(entry({ surfaceUrl: "/x?a=1" }), "one", "light")).toBe(
-    "/x?a=1&theme=one&mode=light",
+    "/x?a=1&theme=one&mode=light&trev=0",
   );
 });
 

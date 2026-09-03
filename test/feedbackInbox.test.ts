@@ -97,7 +97,7 @@ test("a client submission arrives in the inbox with its full owner context", asy
   assert.equal(row.surfaceKind, "markdown");
   // Addressed by snapshot on THIS origin: the browser never holds the
   // destination's token, and the URL survives later revisions.
-  assert.equal(new URL(row.surfaceUrl).pathname, `/api/feedback/s/${pub.snapshotId}/0/1`);
+  assert.equal(row.surfaceUrl, `/api/feedback/s/${pub.snapshotId}/0/1`);
   assert.equal(row.recipientLabel, null);
 });
 
@@ -161,7 +161,7 @@ test("the historical surface is served under a sandbox CSP and keeps the OLD con
     note: "about this bit",
     anchor: { kind: "point", itemIndex: 0, surfaceIndex: 0, x: 0.5, y: 0.5 },
   });
-  const url = new URL((await inbox(stack.app)).feedback[0]!.surfaceUrl);
+  const url = new URL((await inbox(stack.app)).feedback[0]!.surfaceUrl, "http://workspace.test");
 
   // The publication moves on to a new revision...
   const updated = await stack.app.request(`/api/posts/${pub.post.id}`, {

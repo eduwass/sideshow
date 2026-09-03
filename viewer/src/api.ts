@@ -633,10 +633,18 @@ export function feedbackPromptFor(ids: string[]): Promise<{ prompt: string }> {
 
 // The frozen surface, addressed with the same theme/mode query a live card
 // uses, so a historical surface matches the workspace's current theme.
-export function feedbackSurfaceSrc(entry: FeedbackEntry, theme: string, mode: string): string {
+// `revision` is the custom-theme revision (`trev`, as on post surfaces): a
+// pushed theme keeps its id, so the revision is what makes a re-themed frozen
+// document a different URL rather than a cache hit on the old colours.
+export function feedbackSurfaceSrc(
+  entry: FeedbackEntry,
+  theme: string,
+  mode: string,
+  revision = 0,
+): string {
   const url = entry.surfaceUrl.includes("?") ? entry.surfaceUrl : `${entry.surfaceUrl}?`;
   const sep = url.endsWith("?") ? "" : "&";
-  return `${url}${sep}theme=${encodeURIComponent(theme)}&mode=${encodeURIComponent(mode)}`;
+  return `${url}${sep}theme=${encodeURIComponent(theme)}&mode=${encodeURIComponent(mode)}&trev=${revision}`;
 }
 
 // Said in the UI, not just in a doc: the trust boundary is only real if the

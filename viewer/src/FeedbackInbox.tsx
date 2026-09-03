@@ -31,7 +31,7 @@ import {
   startFeedbackPolling,
   type StatusFilter,
 } from "./feedbackInbox.ts";
-import { activeTheme, resolvedMode } from "./theme.ts";
+import { activeTheme, resolvedMode, themeRevision } from "./theme.ts";
 import { toast } from "./state.ts";
 
 // The owner's inbox for what clients wrote back on a published artifact.
@@ -301,7 +301,7 @@ function FeedbackRow(props: {
               sandbox="allow-scripts"
               loading="lazy"
               title={`Revision ${props.entry.snapshotRevision} of ${props.entry.itemTitle}`}
-              src={feedbackSurfaceSrc(props.entry, activeTheme(), resolvedMode())}
+              src={feedbackSurfaceSrc(props.entry, activeTheme(), resolvedMode(), themeRevision())}
             ></iframe>
             <Show when={point()}>
               {(at) => (
