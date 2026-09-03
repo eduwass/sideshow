@@ -1,6 +1,12 @@
 import { encodeBase64 } from "./base64.ts";
 import type { DestinationClient } from "./destination.ts";
-import type { Publication, ShareLink, Snapshot, SnapshotItem } from "./publicationTypes.ts";
+import type {
+  IdentityHeader,
+  Publication,
+  ShareLink,
+  Snapshot,
+  SnapshotItem,
+} from "./publicationTypes.ts";
 import { collectAssetIds, type Post, type Session, type Store, type Surface } from "./types.ts";
 
 // Publishing one private post to the public service.
@@ -93,6 +99,12 @@ export interface PublishInput {
   kind: "post" | "collection";
   originSessionId: string | null;
   originPostId: string | null;
+  // An explicit per-share identity choice: an object sets the header, null
+  // removes it, undefined makes no change to an existing publication.
+  identity?: IdentityHeader | null;
+  // The workspace default, applied only when this publish CREATES the
+  // publication and no explicit choice was made.
+  defaultIdentity?: IdentityHeader | null;
 }
 
 export async function publishItems(input: PublishInput): Promise<PublishResult> {
@@ -114,8 +126,15 @@ export async function publishItems(input: PublishInput): Promise<PublishResult> 
         title: input.title,
         originSessionId: input.originSessionId,
         originPostId: input.originPostId,
+        identity: input.identity !== undefined ? input.identity : (input.defaultIdentity ?? null),
       }),
     }));
+  if (existing[0] && input.identity !== undefined) {
+    await client.request(`/api/owner/publications/${encodeURIComponent(publication.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ identity: input.identity }),
+    });
+  }
 
   const snapshot = await client.request<Snapshot>(
     `/api/owner/publications/${encodeURIComponent(publication.id)}/snapshots`,

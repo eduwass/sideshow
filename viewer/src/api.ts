@@ -248,10 +248,34 @@ export function publicationStatus(id: string): Promise<PublicationStatus> {
   return api<PublicationStatus>(publicationStatusPath(id));
 }
 
-export function publishPost(postId: string, version?: number): Promise<PublishPostResult> {
+export function publishPost(
+  postId: string,
+  version?: number,
+  showIdentity?: boolean,
+): Promise<PublishPostResult> {
   return api<PublishPostResult>(publishPostPath(), {
     method: "POST",
-    body: JSON.stringify(version === undefined ? { postId } : { postId, version }),
+    body: JSON.stringify({
+      postId,
+      ...(version === undefined ? {} : { version }),
+      ...(showIdentity === undefined ? {} : { showIdentity }),
+    }),
+  });
+}
+
+// The workspace's saved publisher identity and whether new shares carry it.
+export type PublishIdentitySettings = { identity: IdentityHeader | null; showByDefault: boolean };
+export const publishIdentityPath = () => "/api/publish/identity";
+export function publishIdentity(): Promise<PublishIdentitySettings> {
+  return api<PublishIdentitySettings>(publishIdentityPath());
+}
+export function savePublishIdentity(patch: {
+  identity?: IdentityHeader | null;
+  showByDefault?: boolean;
+}): Promise<PublishIdentitySettings> {
+  return api<PublishIdentitySettings>(publishIdentityPath(), {
+    method: "PUT",
+    body: JSON.stringify(patch),
   });
 }
 
@@ -321,12 +345,16 @@ export function publishSession(
   sessionId: string,
   postIds: string[],
   title?: string,
+  showIdentity?: boolean,
 ): Promise<PublishSessionResult> {
   return api<PublishSessionResult>(publishSessionPath(), {
     method: "POST",
-    body: JSON.stringify(
-      title === undefined ? { sessionId, postIds } : { sessionId, postIds, title },
-    ),
+    body: JSON.stringify({
+      sessionId,
+      postIds,
+      ...(title === undefined ? {} : { title }),
+      ...(showIdentity === undefined ? {} : { showIdentity }),
+    }),
   });
 }
 

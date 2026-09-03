@@ -2802,6 +2802,31 @@ iframe {
   }
 }
 
+/* Share menu checkbox row (publisher identity) and the publish dialog's
+   identity choice. */
+.share-item[role="menuitemcheckbox"] .share-check {
+  margin-left: auto;
+  display: inline-flex;
+  opacity: 0;
+}
+.share-item[aria-checked="true"] .share-check {
+  opacity: 1;
+}
+.publish-identity,
+.pubs-identity-default {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.publish-identity {
+  padding: 0 18px 10px;
+}
+.pubs-identity-default {
+  margin: 8px 0 12px;
+}
+
 /* Publish-a-session confirmation view.
    The header button reads as a quiet pill next to the view toggle; the dialog
    reuses the fullscreen surface dialog's backdrop treatment so the viewer has

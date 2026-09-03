@@ -12,12 +12,24 @@ import {
   type PublishDestination,
   publishDestination,
   publishErrorMessage,
+  publishIdentity,
+  type PublishIdentitySettings,
   publishPost,
+  savePublishIdentity,
   type ViewerPost,
 } from "./api.ts";
 import { writeClipboard } from "./clipboard.ts";
 import { root } from "./host.ts";
-import { GlobeIcon, ImageIcon, LinkIcon, MarkdownIcon, OpenIcon, ShareIcon } from "./icons.tsx";
+import {
+  CheckIcon,
+  GlobeIcon,
+  ImageIcon,
+  LinkIcon,
+  MarkdownIcon,
+  OpenIcon,
+  ShareIcon,
+  UserIcon,
+} from "./icons.tsx";
 import { toast } from "./state.ts";
 
 // The card's single "take this elsewhere" control: one labelled button opening a
@@ -52,6 +64,8 @@ type MenuAction = {
   disabled?: boolean;
   disabledReason?: string;
   separatorBefore?: boolean;
+  // A checkbox row (menuitemcheckbox): `run` flips it and the menu stays open.
+  checked?: boolean;
 };
 
 export function ShareMenu(props: { post: Post | ViewerPost }) {
@@ -70,8 +84,23 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
   const [destination, setDestination] = createSignal<PublishDestination | null>(null);
   const [publication, setPublication] = createSignal<PublicationStatus | null>(null);
   const [publishing, setPublishing] = createSignal(false);
+  // The workspace's publisher identity and whether this share carries it.
+  const [identity, setIdentity] = createSignal<PublishIdentitySettings | null>(null);
 
   const link = () => postLink(props.post.id);
+
+  const toggleIdentity = async () => {
+    const current = identity();
+    if (!current) return;
+    const next = { ...current, showByDefault: !current.showByDefault };
+    setIdentity(next);
+    try {
+      setIdentity(await savePublishIdentity({ showByDefault: next.showByDefault }));
+    } catch {
+      setIdentity(current);
+      toast("Couldn't save that choice");
+    }
+  };
 
   const close = (refocus = true) => {
     setOpen(false);
@@ -120,6 +149,18 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
               "Saving the first surface as an image needs Cloudflare Browser Rendering, which this server doesn't have. See the README.",
           }),
     },
+    ...(destination()?.configured && identity()?.identity
+      ? [
+          {
+            key: "identity",
+            label: `Show my identity · ${identity()!.identity!.name}`,
+            icon: UserIcon,
+            separatorBefore: true,
+            checked: identity()!.showByDefault,
+            run: toggleIdentity,
+          } satisfies MenuAction,
+        ]
+      : []),
     {
       key: "publish",
       label: publishing()
@@ -128,7 +169,7 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
           ? "Update publication"
           : "Publish to the web…",
       icon: GlobeIcon,
-      separatorBefore: true,
+      separatorBefore: !(destination()?.configured && identity()?.identity),
       // Inert until the destination answers (nothing to say yet), then either
       // usable or explained; and inert again for as long as a publish is in
       // flight, so the row cannot fire twice.
@@ -157,7 +198,11 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
     if (publishing()) return;
     setPublishing(true);
     try {
-      const result = await publishPost(props.post.id);
+      const result = await publishPost(
+        props.post.id,
+        undefined,
+        identity()?.identity ? identity()!.showByDefault : undefined,
+      );
       setPublication({
         configured: true,
         published: true,
@@ -185,7 +230,11 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
   };
 
   const items = () =>
-    Array.from(menu?.querySelectorAll<HTMLElement>("[role='menuitem']:not([disabled])") ?? []);
+    Array.from(
+      menu?.querySelectorAll<HTMLElement>(
+        "[role='menuitem']:not([disabled]), [role='menuitemcheckbox']:not([disabled])",
+      ) ?? [],
+    );
 
   const focusItem = (index: number) => {
     const all = items();
@@ -219,6 +268,11 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
       .then((d) => {
         setDestination(d);
         if (!d.configured) return;
+        publishIdentity()
+          .then(setIdentity)
+          .catch(() => {
+            // No identity row is the honest fallback.
+          });
         publicationStatus(props.post.id)
           .then(setPublication)
           .catch(() => {
@@ -340,7 +394,8 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
                   fallback={
                     <button
                       class="share-item"
-                      role="menuitem"
+                      role={action().checked === undefined ? "menuitem" : "menuitemcheckbox"}
+                      aria-checked={action().checked}
                       type="button"
                       disabled={action().disabled || !!action().disabledReason}
                       title={action().disabledReason}
@@ -348,6 +403,11 @@ export function ShareMenu(props: { post: Post | ViewerPost }) {
                     >
                       {action().icon()}
                       {action().label}
+                      <Show when={action().checked !== undefined}>
+                        <span class="share-check" aria-hidden="true">
+                          <CheckIcon />
+                        </span>
+                      </Show>
                     </button>
                   }
                 >

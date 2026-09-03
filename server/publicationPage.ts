@@ -46,6 +46,13 @@ const PAGE_CSS = `
   color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;
 }
 .scheme button:hover{color:var(--text)}
+.scheme .i-moon{display:none}
+@media (prefers-color-scheme: dark){
+  :root:not([data-scheme="light"]) .scheme .i-sun{display:none}
+  :root:not([data-scheme="light"]) .scheme .i-moon{display:block}
+}
+:root[data-scheme="dark"] .scheme .i-sun{display:none}
+:root[data-scheme="dark"] .scheme .i-moon{display:block}
 @media print{ .scheme{display:none} }
 *{box-sizing:border-box}
 body{
@@ -88,6 +95,7 @@ section.item > h2{font-size:17px;margin:0 0 12px;font-weight:600}
    than 100vw, so the panel can never push the page into horizontal scroll. */
 .fb-add{
   position:fixed;left:12px;bottom:12px;z-index:3;
+  display:inline-flex;align-items:center;gap:7px;
   padding:9px 14px;border:1px solid var(--border);border-radius:999px;
   background:var(--surface);color:var(--text);font-size:14px;cursor:pointer;
   box-shadow:0 2px 10px rgba(0,0,0,.10);max-width:calc(100% - 24px);
@@ -395,13 +403,25 @@ const PAGE_JS = (slug: string, snapshotId: string, trackOpens: boolean, base: st
 })();
 `;
 
+// Inline lucide glyphs (sun, moon, message-square-plus): static, no script.
+const ICON_ATTRS =
+  'xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+const SUN_ICON =
+  `<svg class="i-sun" ${ICON_ATTRS}><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/>` +
+  `<path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/>` +
+  `<path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`;
+const MOON_ICON = `<svg class="i-moon" ${ICON_ATTRS}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`;
+const NOTE_ICON =
+  `<svg ${ICON_ATTRS}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>` +
+  `<path d="M12 7v6"/><path d="M9 10h6"/></svg>`;
+
 // The composer. Static markup only — every value a reader or an agent produced
 // is written into it later with textContent / .value, never as HTML. There is
 // deliberately no thread, no reply and no list of other people's notes: a
 // submission is private to the publication's owner, and this page has no route
 // that could read one back.
 const COMPOSER_HTML =
-  `<button class="fb-add" id="fb-add" type="button" aria-pressed="false">Add a note</button>` +
+  `<button class="fb-add" id="fb-add" type="button" aria-pressed="false">${NOTE_ICON}Add a note</button>` +
   `<div class="fb-panel" id="fb-panel" role="dialog" aria-label="Send a note" hidden>` +
   `<form id="fb-form"><p class="fb-title">Send a note</p>` +
   `<p class="fb-quote" id="fb-quote"></p>` +
@@ -494,7 +514,7 @@ export function renderPublicationPage(input: PublicationPageInput): string {
   return shell(
     input.title,
     input.nonce,
-    `<div class="scheme"><button id="scheme-toggle" type="button" aria-label="Switch between light and dark">\u25d1</button></div>` +
+    `<div class="scheme"><button id="scheme-toggle" type="button" aria-label="Switch between light and dark">${SUN_ICON}${MOON_ICON}</button></div>` +
       `<div class="wrap">${identityHeader(input.identity, base)}<h1>${escapeHtml(
         input.title,
       )}</h1>${contents}${items}</div>` +

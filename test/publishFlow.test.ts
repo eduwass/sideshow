@@ -478,3 +478,60 @@ test("a snapshot failure leaves nothing reachable behind", async () => {
   assert.equal(retry.revision, 1, "the failed attempt consumed no revision");
   assert.equal((await stack.publicApp.request(retry.url)).status, 200);
 });
+
+// --- the workspace's publisher identity ---------------------------------
+
+test("a saved publisher identity rides on new publications by default and can be left off per share", async () => {
+  const stack = makeStack();
+  const { post } = await seedPost(stack);
+  const identity = { name: "Edu", linkUrl: "https://example.com/" };
+
+  const saved = await stack.app.request("/api/publish/identity", {
+    ...json({ identity }),
+    method: "PUT",
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { identity, showByDefault: true });
+
+  // Default on: the new publication carries the header.
+  const first = (await (await publish(stack.app, { postId: post.id })).json()) as any;
+  const detail = async () =>
+    (
+      (await (
+        await owner(stack.publicApp, `/api/owner/publications/${first.publicationId}`)
+      ).json()) as any
+    ).publication.identity;
+  assert.deepEqual(await detail(), identity);
+
+  // An explicit "off" on a later share removes it from the existing publication.
+  await publish(stack.app, { postId: post.id, showIdentity: false });
+  assert.equal(await detail(), null);
+
+  // An update with no choice leaves the publication as it is.
+  await publish(stack.app, { postId: post.id });
+  assert.equal(await detail(), null);
+
+  // Default off: a fresh publication gets no header; an explicit "on" still can.
+  await stack.app.request("/api/publish/identity", {
+    ...json({ showByDefault: false }),
+    method: "PUT",
+  });
+  const { post: other } = await seedPost(stack, "Second");
+  const second = (await (await publish(stack.app, { postId: other.id })).json()) as any;
+  const secondDetail = async () =>
+    (
+      (await (
+        await owner(stack.publicApp, `/api/owner/publications/${second.publicationId}`)
+      ).json()) as any
+    ).publication.identity;
+  assert.equal(await secondDetail(), null);
+  await publish(stack.app, { postId: other.id, showIdentity: true });
+  assert.deepEqual(await secondDetail(), identity);
+
+  // A bad identity is refused, not silently dropped.
+  const bad = await stack.app.request("/api/publish/identity", {
+    ...json({ identity: { name: "", linkUrl: "javascript:alert(1)" } }),
+    method: "PUT",
+  });
+  assert.equal(bad.status, 400);
+});

@@ -26,6 +26,7 @@ import {
   type ShareLinkView,
   shareLinkStatus,
   shareLinkUrl,
+  savePublishIdentity,
   updatePublication,
   updateShareLink,
 } from "./api.ts";
@@ -506,13 +507,21 @@ function IdentityHeaderSection(props: {
       return;
     }
     setSaving(true);
+    const identity = identityFromForm(form());
     await props.run(
-      () => updatePublication(props.publicationId, { identity: identityFromForm(form()) }),
-      "Identity header saved",
+      async () => {
+        const updated = await updatePublication(props.publicationId, { identity });
+        // Also the workspace default, so the next share carries it without a
+        // trip back here (each share menu can still switch it off).
+        if (asDefault()) await savePublishIdentity({ identity, showByDefault: true });
+        return updated;
+      },
+      asDefault() ? "Identity saved — new shares will carry it" : "Identity header saved",
       "Couldn't save the identity header",
     );
     setSaving(false);
   };
+  const [asDefault, setAsDefault] = createSignal(true);
 
   const turnOff = async () => {
     setEnabled(false);
@@ -638,6 +647,14 @@ function IdentityHeaderSection(props: {
               </p>
             )}
           </Show>
+          <label class="pubs-identity-default">
+            <input
+              type="checkbox"
+              checked={asDefault()}
+              onChange={(e) => setAsDefault(e.currentTarget.checked)}
+            />
+            <span>Use this identity for new shares by default</span>
+          </label>
           <div class="pubs-actions">
             <button class="publish-btn primary" type="submit" disabled={saving()}>
               Save identity

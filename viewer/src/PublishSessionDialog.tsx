@@ -2,7 +2,10 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid
 import {
   type CollectionPreview,
   type PublicationStatus,
+  publishIdentity,
+  type PublishIdentitySettings,
   publishSession,
+  savePublishIdentity,
   publishSessionErrorMessage,
   sessionCollectionPreview,
 } from "./api.ts";
@@ -77,12 +80,36 @@ export function PublishSessionDialog(props: {
     props.onClose();
   };
 
+  // The workspace's publisher identity; the checkbox both applies to this
+  // publish and becomes the default for the next one.
+  const [identity, setIdentity] = createSignal<PublishIdentitySettings | null>(null);
+  onMount(() => {
+    publishIdentity()
+      .then(setIdentity)
+      .catch(() => {
+        // Without an answer the dialog simply offers no identity choice.
+      });
+  });
+  const toggleIdentity = (on: boolean) => {
+    const current = identity();
+    if (!current) return;
+    setIdentity({ ...current, showByDefault: on });
+    savePublishIdentity({ showByDefault: on })
+      .then(setIdentity)
+      .catch(() => setIdentity(current));
+  };
+
   const confirm = async () => {
     const postIds = chosen();
     if (publishing() || postIds.length === 0) return;
     setPublishing(true);
     try {
-      const result = await publishSession(props.sessionId, postIds);
+      const result = await publishSession(
+        props.sessionId,
+        postIds,
+        undefined,
+        identity()?.identity ? identity()!.showByDefault : undefined,
+      );
       props.onPublished?.({
         configured: true,
         published: true,
@@ -219,6 +246,19 @@ export function PublishSessionDialog(props: {
           </Show>
         </div>
 
+        <Show when={identity()?.identity}>
+          {(who) => (
+            <label class="publish-identity">
+              <input
+                type="checkbox"
+                checked={identity()!.showByDefault}
+                disabled={publishing()}
+                onChange={(e) => toggleIdentity(e.currentTarget.checked)}
+              />
+              <span>Show my identity · {who().name}</span>
+            </label>
+          )}
+        </Show>
         <div class="publish-foot">
           <span class="publish-count">{selectionSummary(chosen().length, posts().length)}</span>
           <span class="publish-foot-sp"></span>

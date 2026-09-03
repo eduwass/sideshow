@@ -61,7 +61,13 @@ import {
 } from "./types.ts";
 import { validateSurfaces } from "./postSurfaces.ts";
 import { buildFeedbackPrompt, type FeedbackPromptEntry } from "./feedbackPrompt.ts";
-import type { ExternalFeedback, Publication, ShareLink, Snapshot } from "./publicationTypes.ts";
+import type {
+  ExternalFeedback,
+  IdentityHeader,
+  Publication,
+  ShareLink,
+  Snapshot,
+} from "./publicationTypes.ts";
 import {
   collectionPreview,
   frozenCollection,
@@ -71,6 +77,7 @@ import {
   sessionCollectionTitle,
   frozenItem,
 } from "./publishFlow.ts";
+import { normalizeIdentity } from "./publicApp.ts";
 import {
   findWelcomePost,
   WELCOME_POST_TITLE,
@@ -1120,6 +1127,54 @@ export function createApp({
     c.json({ configured: !!destination, origin: destination?.origin ?? null }),
   );
 
+  // The workspace's own publisher identity (name, link, avatar asset). Saved
+  // once from the publications dashboard; new publications carry it by default
+  // and every share (card menu, session dialog) can switch it off or on.
+  const PUBLISH_IDENTITY_SETTING = "publishIdentity";
+  const PUBLISH_IDENTITY_DEFAULT_SETTING = "publishIdentityDefault";
+  const readPublishIdentity = async (): Promise<{
+    identity: IdentityHeader | null;
+    showByDefault: boolean;
+  }> => {
+    const raw = await store.getSetting(PUBLISH_IDENTITY_SETTING);
+    let identity: IdentityHeader | null = null;
+    if (raw) {
+      try {
+        identity = normalizeIdentity(JSON.parse(raw)) || null;
+      } catch {
+        identity = null;
+      }
+    }
+    const showByDefault = (await store.getSetting(PUBLISH_IDENTITY_DEFAULT_SETTING)) !== "off";
+    return { identity, showByDefault };
+  };
+  // What a publish sends as its identity header: an explicit per-share choice
+  // (`showIdentity` true/false) applies to the publication either way; with no
+  // choice, the default applies only if this publish creates the publication,
+  // so an existing one keeps whatever the dashboard or a previous share set.
+  const identityForPublish = async (
+    show: unknown,
+  ): Promise<{ identity?: IdentityHeader | null; defaultIdentity: IdentityHeader | null }> => {
+    const { identity, showByDefault } = await readPublishIdentity();
+    const defaultIdentity = showByDefault ? identity : null;
+    if (show === false) return { identity: null, defaultIdentity };
+    if (show === true && identity) return { identity, defaultIdentity };
+    return { defaultIdentity };
+  };
+  app.get("/api/publish/identity", async (c) => c.json(await readPublishIdentity()));
+  app.put("/api/publish/identity", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if ("identity" in body) {
+      const identity = normalizeIdentity(body.identity);
+      if (identity === false) return c.json({ error: "invalid identity header" }, 400);
+      await store.setSetting(PUBLISH_IDENTITY_SETTING, identity ? JSON.stringify(identity) : "");
+    }
+    if (typeof body.showByDefault === "boolean") {
+      await store.setSetting(PUBLISH_IDENTITY_DEFAULT_SETTING, body.showByDefault ? "on" : "off");
+    }
+    return c.json(await readPublishIdentity());
+  });
+
   // Publishing runs entirely server-side: the browser asks for a post to be
   // published and gets back a URL, but never sees the destination's write token.
   const destinationClient = destination
@@ -1398,6 +1453,7 @@ export function createApp({
           kind: "post",
           originSessionId: post.sessionId,
           originPostId: post.id,
+          ...(await identityForPublish(body.showIdentity)),
         }),
         201,
       );
@@ -1449,6 +1505,7 @@ export function createApp({
           kind: "collection",
           originSessionId: session.id,
           originPostId: null,
+          ...(await identityForPublish(body.showIdentity)),
         }),
         201,
       );
