@@ -727,6 +727,15 @@ test("a table of contents rail appears from four posts and is keyboard-driven", 
   await expect(toc.locator(".toc-item.on")).toContainText("One");
   await expect(toc.locator(".toc-item.on")).toContainText("updated");
   await expect(toc.locator(".toc-item.on")).toBeFocused();
+  // opening must not scroll the page or the app shell sideways
+  expect(
+    await page.evaluate(() => [
+      document.documentElement.scrollLeft,
+      document.body.scrollLeft,
+      document.querySelector("#app")!.scrollLeft,
+      document.querySelector("main")!.scrollLeft,
+    ]),
+  ).toEqual([0, 0, 0, 0]);
 
   // ↓ jumps one post, ⌘↓ to the last, ⌘↑ back to the first
   await page.keyboard.press("ArrowDown");
@@ -746,6 +755,14 @@ test("a table of contents rail appears from four posts and is keyboard-driven", 
   await page.keyboard.press("Escape");
   await expect(toc).not.toHaveClass(/open/);
   await expect(page.locator("main")).toBeFocused();
+
+  // `]` toggles it from anywhere
+  await page.keyboard.press("]");
+  await expect(toc).toHaveClass(/open/);
+  await expect(toc.locator(".toc-item.on")).toBeFocused();
+  await page.keyboard.press("]");
+  await expect(toc).not.toHaveClass(/open/);
+  await expect(page.locator("main")).toBeFocused();
 });
 
 test("Cmd+B toggles the desktop sidebar", async ({ page, server }) => {
@@ -756,6 +773,10 @@ test("Cmd+B toggles the desktop sidebar", async ({ page, server }) => {
   await page.keyboard.press("Meta+b");
   await expect(aside).toHaveCSS("width", "40px");
   await page.keyboard.press("Meta+b");
+  await expect(aside).toHaveCSS("width", "248px");
+  await page.keyboard.press("[");
+  await expect(aside).toHaveCSS("width", "40px");
+  await page.keyboard.press("[");
   await expect(aside).toHaveCSS("width", "248px");
 });
 

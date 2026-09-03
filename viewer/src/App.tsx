@@ -83,6 +83,7 @@ import {
   setUnread,
   setNewestFirst,
   setTocOpen,
+  tocOpen,
   standalonePost,
   streamLoading,
   posts,
@@ -265,29 +266,34 @@ export default function App() {
         requestAnimationFrame(focusMain);
       }
       if (e.key === "Meta") setShortcutHints(true);
-      // ⌘B / Ctrl+B toggles the sidebar: collapses the desktop rail, opens the
-      // phone drawer.
-      if (
-        (e.metaKey || e.ctrlKey) &&
-        !e.altKey &&
-        !e.shiftKey &&
-        (e.key === "b" || e.key === "B") &&
-        !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLTextAreaElement) &&
-        !(e.target instanceof HTMLElement && e.target.isContentEditable)
-      ) {
+      const typing =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable);
+      // ⌘B / Ctrl+B or a bare `[` toggles the sidebar (collapses the desktop
+      // rail, opens the phone drawer); a bare `]` toggles the table of contents.
+      const sidebarKey =
+        (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B");
+      const bare = !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (!typing && (sidebarKey || (bare && e.key === "["))) {
         e.preventDefault();
         if (window.matchMedia("(max-width: 700px)").matches) setNavOpen(!navOpen());
         else setSidebarCollapsed(!sidebarCollapsed());
         return;
       }
+      if (!typing && bare && e.key === "]" && tocAvailable()) {
+        e.preventDefault();
+        if (tocOpen()) {
+          setTocOpen(false);
+          focusMain();
+        } else setTocOpen(true);
+        return;
+      }
       if (
         e.metaKey &&
         /^[1-9]$/.test(e.key) &&
-        !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLTextAreaElement) &&
-        !(e.target instanceof HTMLSelectElement) &&
-        !(e.target instanceof HTMLElement && e.target.isContentEditable)
+        !typing &&
+        !(e.target instanceof HTMLSelectElement)
       ) {
         const session = sessions[Number(e.key) - 1];
         if (session) {
@@ -389,7 +395,7 @@ export default function App() {
                     aria-label={sidebarCollapsed() ? "Expand sidebar" : "Collapse sidebar"}
                     aria-expanded={!sidebarCollapsed()}
                     aria-controls="sessionList"
-                    title={`${sidebarCollapsed() ? "Expand" : "Collapse"} sidebar (⌘B)`}
+                    title={`${sidebarCollapsed() ? "Expand" : "Collapse"} sidebar (⌘B or [)`}
                     onClick={() => setSidebarCollapsed(!sidebarCollapsed())}
                   >
                     <Show when={sidebarCollapsed()} fallback={<PanelLeftCloseIcon />}>

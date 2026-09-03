@@ -2725,6 +2725,7 @@ iframe {
   background: var(--text);
 }
 .toc-list {
+  /* offsetParent for the items, so focusItem can scroll the list itself */
   position: absolute;
   top: 0;
   right: 0;

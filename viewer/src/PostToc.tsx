@@ -18,9 +18,20 @@ export function PostToc() {
   const current = () => currentPostId() ?? ids()[0] ?? null;
   let nav: HTMLElement | undefined;
 
+  // Focus must never scroll an ancestor: the panel is translated off-screen
+  // while it slides in, and a plain focus() would scroll #app/body sideways to
+  // reveal the item (a visible jolt of the whole page). Keep the item in view
+  // by moving the list's own scrollTop instead.
   const focusItem = (id: string | null) => {
     if (!id) return;
-    nav?.querySelector<HTMLElement>(`.toc-item[data-id="${id}"]`)?.focus();
+    const item = nav?.querySelector<HTMLElement>(`.toc-item[data-id="${id}"]`);
+    const list = item?.parentElement;
+    if (!item || !list) return;
+    item.focus({ preventScroll: true });
+    const top = item.offsetTop - list.offsetTop;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + item.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = top + item.offsetHeight - list.clientHeight;
   };
   const jump = (id: string | null) => {
     if (!id) return;
