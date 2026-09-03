@@ -64,6 +64,8 @@ export function viewerVars(p: Palette): Record<string, string> {
     "accent-bg": p.info.bg,
     hover: p.hover,
     danger: p.danger.text,
+    success: p.success.text,
+    warning: p.warning.text,
   };
 }
 

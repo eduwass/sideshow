@@ -278,7 +278,9 @@ function FeedbackRow(props: {
             {" · revision "}
             {props.entry.snapshotRevision}
             {" · "}
-            <span class="fb-status">{feedback().status}</span>
+            <span class="fb-status" data-status={feedback().status}>
+              {feedback().status}
+            </span>
           </span>
         </button>
       </div>

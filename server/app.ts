@@ -1355,27 +1355,34 @@ export function createApp({
   // `sandbox` CSP header the public service uses — so the owner can reopen the
   // exact content a submission was written against, and the destination token
   // never leaves the server.
+  // The frozen surface's DATA comes from the destination; the document is
+  // rendered here so it carries this workspace's theme and the mode the viewer
+  // resolved (see renderThemedSurface). ponytail: the snapshot JSON is fetched
+  // on every request even when the rendered document is cached; snapshots are
+  // small and the inbox opens one at a time.
   app.get("/api/feedback/s/:snapshotId/:item/:surface", async (c) => {
     if (!destinationClient) return c.text("no publication destination", 503);
-    const query = new URLSearchParams();
-    for (const key of ["theme", "mode"]) {
-      const value = c.req.query(key);
-      if (value) query.set(key, value);
-    }
-    const path =
-      owner(
-        `/snapshots/${encodeURIComponent(c.req.param("snapshotId"))}/s/` +
-          `${encodeURIComponent(c.req.param("item"))}/${encodeURIComponent(c.req.param("surface"))}`,
-      ) + (query.size ? `?${query}` : "");
+    const snapshotId = c.req.param("snapshotId");
+    let snapshot: Snapshot;
     try {
-      const html = await destinationClient.requestText(path);
-      c.header("X-Content-Type-Options", "nosniff");
-      c.header("Content-Security-Policy", "sandbox allow-scripts");
-      c.header("Cache-Control", "private, max-age=3600");
-      return c.html(html);
+      snapshot = await destinationClient.request<Snapshot>(
+        owner(`/snapshots/${encodeURIComponent(snapshotId)}`),
+      );
     } catch {
       return c.text("No renderable surface there", 404);
     }
+    const item = snapshot.items?.[Number(c.req.param("item"))];
+    const surface = item?.surfaces?.[Number(c.req.param("surface"))];
+    if (!item || !surface || !isSandboxedSurfaceKind(surface.kind)) {
+      return c.text("No renderable surface there", 404);
+    }
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Content-Security-Policy", "sandbox allow-scripts");
+    return renderThemedSurface(c, {
+      surface,
+      title: item.title,
+      cacheKey: `feedback:${snapshotId}:${c.req.param("item")}:${c.req.param("surface")}`,
+    });
   });
 
   app.post("/api/feedback/prompt", async (c) => {
@@ -2148,43 +2155,15 @@ export function createApp({
   // server-side; mermaid as a self-rendering CDN doc). Image/trace/json surfaces
   // are data the viewer renders natively (text nodes / <img> / JSX), so they
   // never reach here.
-  const renderPostPage = async (c: any) => {
-    const post = await store.getPost(c.req.param("id"));
-    if (!post) return c.text("Post not found", 404);
-    // `part` is the legacy query key; `surface` is canonical.
-    const surfaceParam = c.req.query("surface") ?? c.req.query("part");
-    if (surfaceParam == null) return c.html(await configuredViewerHtml(c, { post }));
-
-    const ver = c.req.query("ver");
-    let title = post.title;
-    let surfaces = post.surfaces;
-    let version = post.version;
-    if (ver && Number(ver) !== post.version) {
-      const old = post.history.find((h) => h.version === Number(ver));
-      if (!old) return c.text(`Version ${ver} not available`, 404);
-      title = old.title;
-      surfaces = old.surfaces;
-      version = old.version;
-    }
-    const idx = Number(surfaceParam ?? 0);
-    const surface = surfaces[idx];
-    // Only the kinds that become HTML are served here. Image/trace/json render
-    // natively in the viewer and must not be reachable as a document.
-    if (!surface || !isSandboxedSurfaceKind(surface.kind)) {
-      return c.text("No renderable surface at that index", 404);
-    }
-    c.header("X-Content-Type-Options", "nosniff");
-    // Sandbox the document however it is loaded. The viewer embeds this in an
-    // iframe whose `sandbox="allow-scripts"` attribute gives it an opaque origin,
-    // but the document is served from the workspace's own origin — so a TOP-LEVEL
-    // load (a user opening /s/:id in a new tab, an agent-shared link) would
-    // otherwise run the agent's script in the workspace origin, where it could reach
-    // same-origin storage or window.open('/') the real viewer. A `sandbox` CSP
-    // can only be set as a response header (not the meta tag the page carries),
-    // and it forces the same opaque-origin sandbox on a direct navigation:
-    // allow-scripts so the bridge still runs, but no allow-same-origin, so agent
-    // code can never touch the workspace origin. Mirrors the iframe's sandbox flags.
-    c.header("Content-Security-Policy", "sandbox allow-scripts");
+  // Render one sandboxed surface document under the workspace theme, pinned to
+  // the light/dark mode the viewer resolved. Shared by /s/:id and the feedback
+  // inbox's frozen-revision route: those surfaces live at the destination, but
+  // they must be drawn with THIS workspace's theme (the destination knows
+  // nothing of a custom palette, and its fallback collides with the chrome).
+  const renderThemedSurface = async (
+    c: any,
+    input: { surface: Surface; title: string; cacheKey: string },
+  ) => {
     // Theme: an explicit ?theme= (the viewer keys iframe srcs by it so a switch
     // reloads the frame) wins; otherwise the persisted workspace theme; else default.
     const resolved = await resolveWorkspaceTheme(c.req.query("theme"));
@@ -2204,7 +2183,7 @@ export function createApp({
     // on; the resolved `version` makes it immutable, so a hit is always correct.
     // Versioned + themed requests (what the viewer always sends) are immutable,
     // so allow long-lived shared caching; an unpinned direct load is not.
-    const cacheKey = `${post.id}:${idx}:${version}:${themeId}:${themeRevision}:${mode ?? "os"}:assets-v2`;
+    const cacheKey = `${input.cacheKey}:${themeId}:${themeRevision}:${mode ?? "os"}:assets-v2`;
     // `immutable` promises a browser it may keep this document for a year. A
     // custom theme only earns that promise when the caller pinned the revision
     // it is asking for (`trev`), because the id alone no longer identifies the
@@ -2216,6 +2195,7 @@ export function createApp({
     if (immutable) c.header("Cache-Control", "public, max-age=31536000, immutable");
     else c.header("Cache-Control", "private, no-cache");
 
+    const { surface, title } = input;
     const doc = await cachedRender(cacheKey, async () => {
       if (surface.kind === "html") {
         return renderHtmlPage({
@@ -2266,6 +2246,46 @@ export function createApp({
       return renderSandboxedPart({ body: rendered.body, css: rendered.css, origin, theme, mode });
     });
     return c.html(doc);
+  };
+
+  const renderPostPage = async (c: any) => {
+    const post = await store.getPost(c.req.param("id"));
+    if (!post) return c.text("Post not found", 404);
+    // `part` is the legacy query key; `surface` is canonical.
+    const surfaceParam = c.req.query("surface") ?? c.req.query("part");
+    if (surfaceParam == null) return c.html(await configuredViewerHtml(c, { post }));
+
+    const ver = c.req.query("ver");
+    let title = post.title;
+    let surfaces = post.surfaces;
+    let version = post.version;
+    if (ver && Number(ver) !== post.version) {
+      const old = post.history.find((h) => h.version === Number(ver));
+      if (!old) return c.text(`Version ${ver} not available`, 404);
+      title = old.title;
+      surfaces = old.surfaces;
+      version = old.version;
+    }
+    const idx = Number(surfaceParam ?? 0);
+    const surface = surfaces[idx];
+    // Only the kinds that become HTML are served here. Image/trace/json render
+    // natively in the viewer and must not be reachable as a document.
+    if (!surface || !isSandboxedSurfaceKind(surface.kind)) {
+      return c.text("No renderable surface at that index", 404);
+    }
+    c.header("X-Content-Type-Options", "nosniff");
+    // Sandbox the document however it is loaded. The viewer embeds this in an
+    // iframe whose `sandbox="allow-scripts"` attribute gives it an opaque origin,
+    // but the document is served from the workspace's own origin — so a TOP-LEVEL
+    // load (a user opening /s/:id in a new tab, an agent-shared link) would
+    // otherwise run the agent's script in the workspace origin, where it could reach
+    // same-origin storage or window.open('/') the real viewer. A `sandbox` CSP
+    // can only be set as a response header (not the meta tag the page carries),
+    // and it forces the same opaque-origin sandbox on a direct navigation:
+    // allow-scripts so the bridge still runs, but no allow-same-origin, so agent
+    // code can never touch the workspace origin. Mirrors the iframe's sandbox flags.
+    c.header("Content-Security-Policy", "sandbox allow-scripts");
+    return renderThemedSurface(c, { surface, title, cacheKey: `${post.id}:${idx}:${version}` });
   };
   app.get("/s/:id", renderPostPage); // legacy alias
   app.get("/p/:id", renderPostPage);
