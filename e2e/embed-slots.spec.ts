@@ -1,6 +1,6 @@
 // End-to-end browser proof that an embedder can project content into the engine's
 // host-overridable slots THROUGH the shadow boundary — specifically the
-// `ss:session-actions` region in the session header (beside the stream/timeline
+// `ss:session-actions` region in the session header (beside the post-order
 // toggle), which the sideshow cloud uses for its "Share" button.
 //
 // Same harness as embed-stream.spec.ts: the embed page + built dist-embed bundle
@@ -58,10 +58,10 @@ test("embedded engine: ss:session-actions slot projects host content into the se
 
   await page.goto(`${server.url}/__embedtest`);
 
-  // The session header (with the stream/timeline toggle) renders in "full" layout.
+  // The session header (with the post-order toggle) renders in "full" layout.
   const head = page.locator(".session-head");
   await expect(head).toBeVisible();
-  await expect(head.locator(".view-toggle")).toBeVisible();
+  await expect(head.locator(".order-toggle")).toBeVisible();
 
   // The host's light-DOM button projects into the session-actions slot, landing
   // inside the engine's header next to the toggle — and is the embedder's element,

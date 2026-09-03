@@ -1,6 +1,6 @@
 // Shared state and the flows that mutate it. Stores reconcile by id so DOM
 // rows/cards persist across refetches (focus, composer drafts, iframes).
-import { createSignal } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import {
   api,
@@ -10,7 +10,6 @@ import {
   type Comment,
   type SessionRow,
   type Post,
-  type TraceStep,
   type VersionInfo,
   type ViewerPost,
 } from "./api.ts";
@@ -81,9 +80,6 @@ const [postsStore, setPostsInternal] = createStore<ViewerPost[]>([]);
 export const posts = postsStore;
 const [commentsState, setCommentsInternal] = createSignal<ViewComment[]>([]);
 export const comments = commentsState;
-// Session-scoped agent trace steps for the selected session (timeline view).
-const [traceStepsState, setTraceStepsInternal] = createSignal<TraceStep[]>([]);
-export const traceSteps = traceStepsState;
 const [streamLoadingState, setStreamLoadingInternal] = createSignal(false);
 export const streamLoading = streamLoadingState;
 // False until the first session list has been fetched, so the workspace's
@@ -98,10 +94,39 @@ export const setInitialLoaded = setInitialLoadedInternal;
 const [liveState, setLiveInternal] = createSignal(false);
 export const live = liveState;
 export const [navOpen, setNavOpen] = createSignal(false);
-// Stream (cards top-to-bottom) vs. timeline (treatment E: posts on a center
-// spine with the trace steps between them). Per-workspace view preference.
-export type ViewMode = "stream" | "timeline";
-export const [viewMode, setViewMode] = createSignal<ViewMode>("stream");
+// Post order in the session stream: chronological (oldest first, the default)
+// or newest first, so fresh posts land at the top. Remembered per browser.
+const POST_ORDER_KEY = "sideshow-post-order";
+const [newestFirstState, setNewestFirstInternal] = createSignal(
+  localStorage.getItem(POST_ORDER_KEY) === "newest",
+);
+export const newestFirst = newestFirstState;
+export function setNewestFirst(value: boolean) {
+  setNewestFirstInternal(value);
+  localStorage.setItem(POST_ORDER_KEY, value ? "newest" : "oldest");
+}
+// The stream in display order. Posts are stored chronologically; newest-first
+// just reverses the view, so cards keep their identity across the flip. The
+// table of contents follows the same order.
+export const orderedPosts = createMemo(() => (newestFirst() ? [...posts].reverse() : posts));
+// The post currently in view (mirrors what focusPost writes to the route).
+export const [currentPostId, setCurrentPostId] = createSignal<string | null>(null);
+// The right-hand table of contents is open for keyboard use.
+export const [tocOpen, setTocOpen] = createSignal(false);
+// Which post the table of contents moves to: one step, or an edge. Clamps at
+// the ends; with no current post an edge or step lands on the first.
+export function stepPost(
+  ids: readonly string[],
+  current: string | null,
+  move: 1 | -1 | "first" | "last",
+): string | null {
+  if (ids.length === 0) return null;
+  if (move === "first") return ids[0];
+  if (move === "last") return ids[ids.length - 1];
+  const idx = current ? ids.indexOf(current) : -1;
+  if (idx < 0) return ids[0];
+  return ids[Math.max(0, Math.min(ids.length - 1, idx + move))];
+}
 // Post id the next mounted card should scroll to (set for SSE arrivals
 // landing while the user is near the bottom, not the initial batch of a
 // session switch).
@@ -341,12 +366,12 @@ export async function select(
   });
   setScrollTarget(null);
   setPillTarget(null);
+  setCurrentPostId(null);
+  setTocOpen(false);
   setNavOpen(false);
   setStreamLoadingInternal(true);
   setPostsInternal(reconcile([]));
   setCommentsInternal([]);
-  setTraceStepsInternal([]);
-  void fetchTrace(id);
   const details = await fetchSessionPostDetails(id);
   if (selected() !== id) return; // user switched away mid-load
   setPostsInternal(reconcile(details, { key: "id" }));
@@ -364,6 +389,7 @@ export async function select(
 // Reflect the currently visible post in the route (replace, so scrolling
 // doesn't pollute history).
 export function focusPost(postId: string) {
+  setCurrentPostId(postId);
   const sid = selected();
   if (sid) host().router.navigate({ sessionId: sid, surfaceId: postId }, { replace: true });
 }
@@ -428,28 +454,22 @@ async function upsertPost(id: string, { scroll = true } = {}) {
   if (idx >= 0) {
     setPostsInternal(idx, reconcile(s, { key: "id" }));
   } else {
-    // Follow new posts only when the user is already at the bottom;
-    // never yank them away from whatever they're reading mid-scroll.
+    // Follow new posts only when the user is already at the edge they land on
+    // (bottom, or top when newest-first); never yank them away from whatever
+    // they're reading mid-scroll.
     if (scroll) {
-      if (nearBottom()) setScrollTarget(s.id);
+      if (nearNewEdge()) setScrollTarget(s.id);
       else setPillTarget(s.id);
     }
     setPostsInternal(posts.length, s);
   }
 }
 
-// Fetch the session's trace steps (timeline view). Ignored if the user has
-// switched away by the time it resolves.
-export async function fetchTrace(sessionId: string) {
-  const res = await api<{ steps: TraceStep[] }>(`/api/sessions/${sessionId}/trace`).catch(
-    () => null,
-  );
-  if (res && selected() === sessionId) setTraceStepsInternal(res.steps);
-}
-
-export function nearBottom() {
+// Is the stream scrolled to the edge where new posts appear?
+export function nearNewEdge() {
   const m = root().querySelector("main");
-  return !!m && m.scrollHeight - m.scrollTop - m.clientHeight < 200;
+  if (!m) return false;
+  return newestFirst() ? m.scrollTop < 200 : m.scrollHeight - m.scrollTop - m.clientHeight < 200;
 }
 
 function mergeComments(list: Comment[]) {
@@ -599,9 +619,6 @@ async function handleFeedData(data: string) {
     const idx = posts.findIndex((s) => s.id === e.id);
     if (idx >= 0) setPostsInternal(produce((arr) => arr.splice(idx, 1)));
     await refreshSessionsAfterFeedEvent();
-  } else if (e.type === "trace-updated") {
-    // the agent working is ambient, not an alert — refetch quietly, no badge
-    if (e.sessionId === selected()) await fetchTrace(e.sessionId);
   } else if (e.type === "comment-created") {
     if (away && e.sessionId) markUnread(e.sessionId);
     if (e.sessionId === selected()) {
@@ -692,7 +709,6 @@ async function resyncSelected() {
   const before = selected();
   await refreshSessions();
   if (!before || selected() !== before) return; // select() rebuilt the stream
-  void fetchTrace(before);
   const details = await fetchSessionPostDetails(before);
   const ids = new Set(details.map((post) => post.id));
   setPostsInternal(

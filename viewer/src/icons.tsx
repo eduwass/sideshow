@@ -58,25 +58,6 @@ export function PublicationsIcon() {
   );
 }
 
-export function StreamIcon() {
-  return (
-    <Icon>
-      <rect width="7" height="9" x="3" y="3" rx="1" />
-      <rect width="7" height="5" x="14" y="3" rx="1" />
-      <rect width="7" height="9" x="14" y="12" rx="1" />
-      <rect width="7" height="5" x="3" y="16" rx="1" />
-    </Icon>
-  );
-}
-
-export function TimelineIcon() {
-  return (
-    <Icon>
-      <path d="M3 12h4l3-8 4 16 3-8h4" />
-    </Icon>
-  );
-}
-
 export function SortIcon(props: { oldestFirst: boolean }) {
   return (
     <Icon>

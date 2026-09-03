@@ -90,6 +90,11 @@
 html,
 body {
   height: 100%;
+  /* `main` is the only scroller. The document itself must never scroll: a
+     scrollIntoView/focus inside a sandboxed surface iframe propagates to every
+     ancestor scroller, and a document that can scroll leaves the app shell
+     pushed off the top with blank page below it. */
+  overflow: hidden;
 }
 body {
   margin: 0;
@@ -2442,16 +2447,12 @@ iframe {
   .session-head .head-sp {
     display: none;
   }
-  .view-toggle {
+  .order-toggle {
     grid-column: 3;
     grid-row: 1 / 3;
-    width: auto;
-    margin-top: 0;
-  }
-  .view-toggle button {
     width: 32px;
     min-height: 32px;
-    padding: 7px;
+    margin-top: 0;
   }
   #stream {
     padding: 6px 8px calc(24px + env(safe-area-inset-bottom, 0px));
@@ -2577,9 +2578,6 @@ iframe {
     border-right: 0;
     border-radius: 0;
   }
-  .view-toggle {
-    width: 100%;
-  }
 }
 /* narrow or touch: hover-revealed actions must stay reachable */
 @media (max-width: 700px), (hover: none) {
@@ -2637,24 +2635,18 @@ iframe {
   }
 }
 
-/* ---- session view toggle (Stream / Timeline) ---- */
+/* ---- session post order toggle (oldest / newest first) ---- */
 .session-head .head-sp {
   flex: 1;
 }
-.view-toggle {
-  display: inline-flex;
+.order-toggle {
   align-self: center;
-  border: 0.5px solid var(--border);
-  border-radius: 999px;
-  overflow: visible;
-  background: var(--surface);
-}
-.view-toggle button {
   font-family: inherit;
   font-size: 12px;
   color: var(--muted);
-  background: none;
-  border: none;
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 999px;
   display: grid;
   place-items: center;
   width: 32px;
@@ -2662,20 +2654,11 @@ iframe {
   padding: 7px;
   cursor: pointer;
 }
-.view-toggle button:first-child {
-  border-radius: 999px 0 0 999px;
-}
-.view-toggle button:last-child {
-  border-radius: 0 999px 999px 0;
-}
-.view-toggle button + button {
-  border-left: 0.5px solid var(--border);
-}
-.view-toggle svg {
+.order-toggle svg {
   width: 16px;
   height: 16px;
 }
-.view-toggle button.on {
+.order-toggle[aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent) 13%, var(--surface));
   color: var(--accent);
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 20%, transparent);
@@ -2686,335 +2669,117 @@ iframe {
   }
   .topbar .menu,
   aside,
-  #scrim,
-  .tl-notes-fold > .body,
-  .tl-cmd-inline {
+  #scrim {
     transition: none;
   }
-  .topbar .menu:active,
-  .tl-notes-fold > .body:active,
-  .tl-cmd-inline:active {
+  .topbar .menu:active {
     transform: none;
   }
 }
 
-/* ---- treatment E: session timeline ---- */
-/* One spine down the middle. Surfaces are opaque cards that cover the line;
-   the step clusters between them sit on the visible stretches of spine, their
-   dots straddling the center. The grid trick: every step/toggle is a two-column
-   grid and its body lives in column 2, so its leading dot lands on the 50% line. */
-.timeline {
+/* ---- post table of contents (right rail) ----
+   A 26px rail of tick marks; the list panel is absolutely positioned inside it
+   so it overlays the stream (never changes the document height) and slides in
+   on hover or when opened from the keyboard (.open). Desktop only. */
+.toc {
   position: relative;
-  padding-top: 6px;
+  flex: none;
+  width: 26px;
+  border-left: 0.5px solid transparent;
 }
-.timeline::before {
-  content: "";
-  position: absolute;
-  left: 7px;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  background: var(--border);
-  transform: translateX(-50%);
-  z-index: 0;
-}
-/* Left rail, not a centered spine: the line runs down the left and ONLY the
-   anchors get a node on it — user prompts and published posts. Everything
-   else (the agent's prose, the folded command summary) is quiet text indented
-   past the rail, so the eye lands on prompts and posts and the work reads as
-   the connective tissue between them. */
-.tl-rail-pad {
-  padding-left: 28px;
-}
-.tl-turn {
-  position: relative;
-  z-index: 1;
-}
-.tl-post {
-  position: relative;
-  z-index: 1;
-  padding-left: 28px;
-  /* breathing room so a card separates from the trace lines around it */
-  margin: 22px 0;
-}
-.tl-node {
-  position: absolute;
-  left: 7px;
-  top: 4px;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--faint);
-  border: 3px solid var(--bg);
-  transform: translateX(-50%);
-  z-index: 2;
-}
-.tl-row {
-  position: relative;
-  z-index: 1;
-  padding: 3px 0 3px 28px;
-}
-.tl-marker {
-  position: absolute;
-  left: 7px;
-  transform: translateX(-50%);
-  z-index: 2;
-}
-/* prompt — the only inline anchor: a filled accent node + bold text */
-.tl-prompt {
-  margin-top: 15px;
-}
-.tl-marker.prompt {
-  top: 5px;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--faint);
-  border: 3px solid var(--bg);
-}
-.tl-prompt > .body {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text);
-}
-/* response — the agent's prose, no marker */
-.tl-response > .body {
-  font-size: 13.5px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-/* the folded middle-notes toggle */
-.tl-notes-fold > .body {
-  font-size: 12px;
-  color: var(--faint);
-}
-.tl-fold-button {
-  appearance: none;
-  display: inline;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  line-height: inherit;
-  text-align: left;
-}
-.tl-fold-caret {
-  display: none;
-}
-.tl-fold-label-mobile {
-  display: none;
-}
-/* an expanded tool call, a faint mono line in the fold */
-.tl-cmd-row > .body {
-  padding-left: 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--faint);
-  min-width: 0;
-}
-.tl-cmd-inline {
+.toc-ticks {
   display: flex;
+  flex-direction: column;
+  justify-content: center;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 10px;
+  height: 100%;
+  padding-top: 40px;
 }
-.tl-cmd-inline > span:last-child {
-  min-width: 0;
+.toc-ticks i {
+  display: block;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--faint);
 }
-.tl-cmd-row .knd {
-  flex: 0 0 auto;
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--accent);
-  opacity: 0.8;
+.toc-ticks i.on {
+  width: 16px;
+  background: var(--text);
 }
-.tl-clickable {
+.toc-list {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 240px;
+  overflow-y: auto;
+  padding: 48px 6px 12px;
+  background: var(--panel);
+  border-left: 0.5px solid var(--border);
+  transform: translateX(100%);
+  opacity: 0;
+  transition:
+    transform 160ms var(--ease-out-strong),
+    opacity 160ms var(--ease-out-strong);
+}
+.toc:hover .toc-list,
+.toc.open .toc-list {
+  transform: none;
+  opacity: 1;
+}
+.toc-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: left;
   cursor: pointer;
 }
-.tl-detail {
-  margin: 2px 0 4px;
-  padding: 8px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--muted);
-  background: var(--surface);
-  border: 0.5px solid var(--border);
-  border-radius: 8px;
-  white-space: pre-wrap;
-  overflow-x: auto;
+.toc-item:hover {
+  background: var(--hover);
 }
-.tl-tail {
-  padding-bottom: 80px;
-}
-.tl-tail > .body {
-  font-size: 12px;
+.toc-item .n {
+  flex: none;
+  width: 14px;
   color: var(--faint);
+  font-variant-numeric: tabular-nums;
 }
-
+.toc-item .t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.toc-item .ago {
+  flex: none;
+  color: var(--faint);
+  font-size: 11px;
+}
+.toc-item.on {
+  color: var(--text);
+  background: var(--hover);
+}
+.toc-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
 @media (max-width: 700px) {
-  .timeline {
-    padding: 0 10px 0;
-  }
-  .timeline::before {
+  .toc {
     display: none;
   }
-  .tl-turn {
-    margin: 10px 0 12px;
-    padding: 11px 12px 12px;
-    background: color-mix(in srgb, var(--surface) 78%, var(--bg));
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 70%, transparent);
-  }
-  .tl-turn::before {
-    content: "";
-    position: absolute;
-    inset: 12px auto 12px 0;
-    width: 3px;
-    border-radius: 999px;
-    background: var(--accent);
-  }
-  .tl-row {
-    padding: 0;
-  }
-  .tl-marker {
-    display: none;
-  }
-  .tl-marker.prompt {
-    display: none;
-  }
-  .tl-post {
-    padding-left: 0;
-    margin: 12px 0 14px;
-  }
-  .tl-post .tl-node {
-    display: none;
-  }
-  .tl-prompt {
-    margin: 0 0 8px;
-  }
-  .tl-prompt > .body {
-    font-size: 14px;
-    line-height: 1.42;
-    font-weight: 650;
-    letter-spacing: 0;
-    overflow-wrap: anywhere;
-  }
-  .tl-prompt > .body::before {
-    content: "Prompt";
-    display: block;
-    margin-bottom: 5px;
-    font-family:
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      BlinkMacSystemFont,
-      "Segoe UI",
-      sans-serif;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1;
-    text-transform: uppercase;
-    color: var(--accent);
-  }
-  .tl-response > .body {
-    font-size: 13.5px;
-    line-height: 1.5;
-    color: var(--muted);
-    overflow-wrap: anywhere;
-  }
-  .tl-response + .tl-notes-fold,
-  .tl-notes-fold + .tl-response,
-  .tl-row + .tl-row {
-    margin-top: 9px;
-  }
-  .tl-notes-fold > .body {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    min-height: 36px;
-    padding: 0 10px 0 12px;
-    color: var(--text);
-    background: var(--bg);
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    transition:
-      transform 140ms var(--ease-out-strong),
-      border-color 160ms ease,
-      background-color 160ms ease;
-  }
-  .tl-notes-fold > .body:active {
-    transform: scale(0.99);
-  }
-  .tl-fold-caret {
-    display: inline-grid;
-    width: 22px;
-    height: 22px;
-    place-items: center;
-    border-radius: 999px;
-    color: var(--accent);
-    background: var(--accent-bg);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 14px;
-    line-height: 1;
-  }
-  .tl-fold-label-desktop {
-    display: none;
-  }
-  .tl-fold-label-mobile {
-    display: inline;
-  }
-  .tl-cmd-row > .body {
-    padding-left: 0;
-    color: var(--muted);
-  }
-  .tl-cmd-inline {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    gap: 4px 8px;
-    padding: 9px 10px;
-    background: var(--bg);
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    transition:
-      transform 140ms var(--ease-out-strong),
-      border-color 160ms ease,
-      background-color 160ms ease;
-  }
-  .tl-cmd-inline:active {
-    transform: scale(0.99);
-  }
-  .tl-cmd-row .knd {
-    margin-top: 1px;
-    padding: 1px 5px;
-    background: var(--accent-bg);
-    border-radius: 4px;
-    opacity: 1;
-  }
-  .tl-cmd-inline > span:last-child {
-    color: var(--muted);
-    line-height: 1.45;
-    overflow-wrap: anywhere;
-  }
-  .tl-detail {
-    margin: 6px 0 2px;
-    padding: 9px 10px;
-    font-size: 11.5px;
-    line-height: 1.5;
-    background: var(--bg);
-    border-color: var(--border-2);
-    overflow-wrap: anywhere;
-  }
-  .tl-tail {
-    padding: 8px 10px 72px;
-  }
-  .tl-tail > .body {
-    padding-left: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .toc-list {
+    transition: none;
   }
 }
 
@@ -3042,7 +2807,7 @@ iframe {
   height: 16px;
 }
 .publish-session:active:not(:disabled),
-.view-toggle button:active {
+.order-toggle:active {
   transform: scale(0.94);
 }
 .publish-session:hover:not(:disabled) {

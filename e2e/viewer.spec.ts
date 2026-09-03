@@ -701,6 +701,60 @@ test("Cmd+Option+Up/Down switches between sessions, wrapping at the ends", async
   await expect(page.locator(".sess.sel .sess-title")).toContainText("one session");
 });
 
+test("a table of contents rail appears from four posts and is keyboard-driven", async ({
+  page,
+  server,
+}) => {
+  const first = await publish(server.url, { html: "<p>1</p>", title: "One", agent: "e2e" });
+  const session = first.sessionId;
+  await publish(server.url, { html: "<p>2</p>", title: "Two", agent: "e2e", session });
+  await publish(server.url, { html: "<p>3</p>", title: "Three", agent: "e2e", session });
+
+  await page.goto(`${server.url}/session/${session}`);
+  await expect(page.locator(".card:not(#whatsNew)")).toHaveCount(3);
+  await expect(page.locator("nav.toc")).toHaveCount(0);
+
+  await publish(server.url, { html: "<p>4</p>", title: "Four", agent: "e2e", session });
+  const toc = page.locator("nav.toc");
+  await expect(toc).toBeVisible();
+  await expect(toc.locator(".toc-item")).toHaveCount(4);
+  await expect(toc.locator(".toc-item").first()).not.toBeInViewport();
+
+  // → from main opens the list on the current post
+  await page.locator("main").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(toc).toHaveClass(/open/);
+  await expect(toc.locator(".toc-item.on")).toContainText("One");
+  await expect(toc.locator(".toc-item.on")).toContainText("updated");
+  await expect(toc.locator(".toc-item.on")).toBeFocused();
+
+  // ↓ jumps one post, ⌘↓ to the last, ⌘↑ back to the first
+  await page.keyboard.press("ArrowDown");
+  await expect(toc.locator(".toc-item.on")).toContainText("Two");
+  await expect(page).toHaveURL(new RegExp(`/session/${session}/p/`));
+  await page.keyboard.press("Meta+ArrowDown");
+  await expect(toc.locator(".toc-item.on")).toContainText("Four");
+  await page.keyboard.press("Meta+ArrowUp");
+  await expect(toc.locator(".toc-item.on")).toContainText("One");
+  await expectNoHorizontalOverflow(page, "main");
+
+  // Esc folds the list and hands focus back to main
+  await page.keyboard.press("Escape");
+  await expect(toc).not.toHaveClass(/open/);
+  await expect(page.locator("main")).toBeFocused();
+});
+
+test("Cmd+B toggles the desktop sidebar", async ({ page, server }) => {
+  await publish(server.url, { html: "<p>x</p>", title: "Compact", agent: "e2e" });
+  await page.goto(server.url);
+  const aside = page.locator("aside");
+  await expect(aside).toHaveCSS("width", "248px");
+  await page.keyboard.press("Meta+b");
+  await expect(aside).toHaveCSS("width", "40px");
+  await page.keyboard.press("Meta+b");
+  await expect(aside).toHaveCSS("width", "248px");
+});
+
 test("the desktop sidebar can collapse to a minimal rail and expand again", async ({
   page,
   server,
@@ -828,60 +882,6 @@ test("at phone width the sidebar collapses into a drawer and actions stay visibl
   await deleteLongSession.click({ trial: true });
   await longSessionRow.click();
   await expect(page.locator("aside")).not.toBeInViewport();
-});
-
-test("timeline traces wrap cleanly at iPhone 14 Pro width", async ({ page, server }) => {
-  const surface = await publishParts(server.url, {
-    title: "Timeline anchor",
-    agent: "e2e",
-    parts: [
-      { kind: "markdown", markdown: "## Timeline card\n\nThe trace wraps around this card." },
-    ],
-  });
-  await fetch(`${server.url}/api/sessions/${surface.sessionId}/trace`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      steps: [
-        {
-          kind: "prompt",
-          label: "prompt-" + "unbrokenprompttoken".repeat(8),
-          detail:
-            "A longer prompt detail that should expand without creating horizontal document scroll.",
-        },
-        {
-          kind: "say",
-          label: "response-" + "unbrokenresponsetoken".repeat(8),
-        },
-        {
-          kind: "shell",
-          label:
-            "npm run trace-check -- --device=iPhone14Pro --case=long-command-label-without-spaces",
-          detail:
-            "command output: " +
-            "unbroken-token-for-overflow-regression-".repeat(8) +
-            "\nsecond line with normal words",
-        },
-        { kind: "say", label: "The timeline remains readable on a phone." },
-      ],
-      reset: true,
-    }),
-  });
-
-  await page.setViewportSize({ width: 393, height: 852 });
-  await page.goto(`${server.url}/session/${surface.sessionId}`);
-  await page.locator(".view-toggle button", { hasText: "Timeline" }).click();
-
-  await expect(page.locator(".timeline")).toBeVisible();
-  await expect(page.getByText("prompt-unbrokenprompttoken", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "Show 1 work step" }).click();
-  await expect(page.getByRole("button", { name: "Hide 1 work step" })).toBeVisible();
-  await page.getByText("npm run trace-check", { exact: false }).click();
-  await expect(
-    page.getByText("unbroken-token-for-overflow-regression", { exact: false }),
-  ).toBeVisible();
-  await expectNoHorizontalOverflow(page, "main");
-  await expectNoHorizontalOverflow(page, ".timeline");
 });
 
 test("the Connect an agent page shows the add-mcp logo picker", async ({ page, server }) => {

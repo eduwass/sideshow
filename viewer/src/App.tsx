@@ -34,8 +34,8 @@ import { renderNotes } from "./notes.ts";
 import { FeedbackInbox, FeedbackLink } from "./FeedbackInbox.tsx";
 import { Publications } from "./Publications.tsx";
 import { PublishSessionDialog } from "./PublishSessionDialog.tsx";
-import { SessionTimeline } from "./SessionTimeline.tsx";
 import { StreamSkeleton } from "./Skeleton.tsx";
+import { PostToc, TOC_MIN_POSTS } from "./PostToc.tsx";
 import {
   MoonIcon,
   PanelLeftCloseIcon,
@@ -44,10 +44,9 @@ import {
   PublicationsIcon,
   SettingsIcon,
   ShareIcon,
-  StreamIcon,
   SunIcon,
   SystemIcon,
-  TimelineIcon,
+  SortIcon,
 } from "./icons.tsx";
 import {
   activeTheme,
@@ -69,7 +68,9 @@ import {
   initialLoaded,
   live,
   navOpen,
-  nearBottom,
+  nearNewEdge,
+  newestFirst,
+  orderedPosts,
   pillTarget,
   refreshSessionsQuiet,
   select,
@@ -80,7 +81,8 @@ import {
   setNavOpen,
   setPillTarget,
   setUnread,
-  setViewMode,
+  setNewestFirst,
+  setTocOpen,
   standalonePost,
   streamLoading,
   posts,
@@ -89,7 +91,6 @@ import {
   toastText,
   unread,
   updateNotice,
-  viewMode,
 } from "./state.ts";
 
 // The engine's two full-page views. The host Route only carries a session/post,
@@ -157,6 +158,11 @@ function pageTitle(
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
+  // The table of contents earns its rail only once a session has enough posts
+  // to need one, and only on the workspace itself (not a full-page view).
+  const tocAvailable = createMemo(
+    () => !streamMode() && !fullPage() && !!selected() && posts.length >= TOC_MIN_POSTS,
+  );
   const [moreOpen, setMoreOpen] = createSignal(false);
   const [shortcutHints, setShortcutHints] = createSignal(false);
   const focusMain = () =>
@@ -259,6 +265,22 @@ export default function App() {
         requestAnimationFrame(focusMain);
       }
       if (e.key === "Meta") setShortcutHints(true);
+      // ⌘B / Ctrl+B toggles the sidebar: collapses the desktop rail, opens the
+      // phone drawer.
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === "b" || e.key === "B") &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement) &&
+        !(e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
+        e.preventDefault();
+        if (window.matchMedia("(max-width: 700px)").matches) setNavOpen(!navOpen());
+        else setSidebarCollapsed(!sidebarCollapsed());
+        return;
+      }
       if (
         e.metaKey &&
         /^[1-9]$/.test(e.key) &&
@@ -367,7 +389,7 @@ export default function App() {
                     aria-label={sidebarCollapsed() ? "Expand sidebar" : "Collapse sidebar"}
                     aria-expanded={!sidebarCollapsed()}
                     aria-controls="sessionList"
-                    title={sidebarCollapsed() ? "Expand sidebar" : "Collapse sidebar"}
+                    title={`${sidebarCollapsed() ? "Expand" : "Collapse"} sidebar (⌘B)`}
                     onClick={() => setSidebarCollapsed(!sidebarCollapsed())}
                   >
                     <Show when={sidebarCollapsed()} fallback={<PanelLeftCloseIcon />}>
@@ -449,14 +471,20 @@ export default function App() {
             <main
               tabIndex={0}
               onKeyDown={(event) => {
-                if (event.target !== event.currentTarget || event.key !== "ArrowLeft") return;
+                if (event.target !== event.currentTarget) return;
+                if (event.key === "ArrowRight" && tocAvailable()) {
+                  event.preventDefault();
+                  setTocOpen(true);
+                  return;
+                }
+                if (event.key !== "ArrowLeft") return;
                 event.preventDefault();
                 [...root().querySelectorAll<HTMLElement>(".sess[data-id]")]
                   .find((item) => item.dataset.id === selected())
                   ?.focus();
               }}
               onScroll={() => {
-                if (nearBottom()) setPillTarget(null);
+                if (nearNewEdge()) setPillTarget(null);
               }}
             >
               {/* Host-overridable main pane (SLOTS.main). Fallback is the normal
@@ -485,6 +513,9 @@ export default function App() {
                 </Switch>
               </slot>
             </main>
+            <Show when={tocAvailable()}>
+              <PostToc />
+            </Show>
           </div>
           <Show when={moreOpen()}>
             <div class="more-panel" role="dialog" aria-label="Settings and links">
@@ -530,7 +561,7 @@ export default function App() {
               setPillTarget(null);
             }}
           >
-            new post ↓
+            new post {newestFirst() ? "↑" : "↓"}
           </button>
         </>
       }
@@ -868,32 +899,23 @@ function SessionView() {
         <Show when={!isReadonly() && current()}>
           {(session) => <PublishSessionAction sessionId={session().id} />}
         </Show>
-        <ViewToggle />
+        <OrderToggle />
         {/* Host-overridable region (SLOTS.sessionActions): session-scoped controls
             an embedder projects beside the toggle (e.g. cloud "Share"). Empty
             fallback — self-hosted renders nothing here. */}
         <slot name={SLOTS.sessionActions}></slot>
       </div>
       <div id="stream">
-        <Show
-          when={viewMode() === "timeline"}
-          fallback={
-            <>
-              <WhatsNewCard />
-              <Show when={streamLoading()}>
-                <StreamSkeleton />
-              </Show>
-              <Show when={!streamLoading() && posts.length === 0}>
-                <div class="empty" id="streamEmpty">
-                  No posts in this session yet.
-                </div>
-              </Show>
-              <For each={posts}>{(s) => <Card post={s} />}</For>
-            </>
-          }
-        >
-          <SessionTimeline />
+        <WhatsNewCard />
+        <Show when={streamLoading()}>
+          <StreamSkeleton />
         </Show>
+        <Show when={!streamLoading() && posts.length === 0}>
+          <div class="empty" id="streamEmpty">
+            No posts in this session yet.
+          </div>
+        </Show>
+        <For each={orderedPosts()}>{(s) => <Card post={s} />}</For>
       </div>
     </div>
   );
@@ -968,32 +990,22 @@ function PublishSessionAction(props: { sessionId: string }) {
   );
 }
 
-// Stream ↔ timeline switch in the session head. Timeline is treatment E — the
-// session's posts on a center spine with the trace steps between them.
-function ViewToggle() {
+// Oldest-first ↔ newest-first switch in the session head (remembered per browser).
+function OrderToggle() {
+  const label = () => (newestFirst() ? "Newest first" : "Oldest first");
   return (
-    <div class="view-toggle" role="group" aria-label="View mode">
-      <button
-        classList={{ on: viewMode() === "stream" }}
-        title="Stream"
-        data-tooltip="Stream"
-        aria-pressed={viewMode() === "stream"}
-        onClick={() => setViewMode("stream")}
-      >
-        <StreamIcon />
-        <span class="sr-only">Stream</span>
-      </button>
-      <button
-        classList={{ on: viewMode() === "timeline" }}
-        title="Timeline"
-        data-tooltip="Timeline"
-        aria-pressed={viewMode() === "timeline"}
-        onClick={() => setViewMode("timeline")}
-      >
-        <TimelineIcon />
-        <span class="sr-only">Timeline</span>
-      </button>
-    </div>
+    <button
+      class="order-toggle"
+      type="button"
+      title={label()}
+      data-tooltip={label()}
+      aria-label={`Sort posts: ${label().toLowerCase()}`}
+      aria-pressed={newestFirst()}
+      onClick={() => setNewestFirst(!newestFirst())}
+    >
+      <SortIcon oldestFirst={!newestFirst()} />
+      <span class="sr-only">{label()}</span>
+    </button>
   );
 }
 
