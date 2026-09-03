@@ -34,12 +34,14 @@ import { activeTheme, resolvedMode, themeRevision } from "./theme.ts";
 import { TraceSurface } from "./TraceSurface.tsx";
 import {
   comments,
+  currentPostId,
   deleteComment,
   focusPost,
   scrollTarget,
   sendComment,
   sessions,
   setScrollTarget,
+  tocOpen,
   toast,
   type ViewComment,
 } from "./state.ts";
@@ -372,7 +374,12 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
   };
 
   return (
-    <div class="card" data-id={props.post.id} ref={(el) => (card = el)}>
+    <div
+      class="card"
+      classList={{ "toc-current": tocOpen() && currentPostId() === props.post.id }}
+      data-id={props.post.id}
+      ref={(el) => (card = el)}
+    >
       <div class="card-head">
         <span class="card-title">{props.post.title}</span>
         {/* The version dropdown and "updated" meta are workspace-feed affordances;

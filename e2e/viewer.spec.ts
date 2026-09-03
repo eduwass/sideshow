@@ -732,6 +732,10 @@ test("a table of contents rail appears from four posts and is keyboard-driven", 
   await page.keyboard.press("ArrowDown");
   await expect(toc.locator(".toc-item.on")).toContainText("Two");
   await expect(page).toHaveURL(new RegExp(`/session/${session}/p/`));
+  // the target card is outlined and its title clears the sticky session header
+  const target = page.locator(".card.toc-current");
+  await expect(target).toHaveCount(1);
+  await expect(target.locator(".card-head")).toBeInViewport({ ratio: 1 });
   await page.keyboard.press("Meta+ArrowDown");
   await expect(toc.locator(".toc-item.on")).toContainText("Four");
   await page.keyboard.press("Meta+ArrowUp");

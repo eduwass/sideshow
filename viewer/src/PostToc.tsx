@@ -61,6 +61,9 @@ export function PostToc() {
       aria-label="Posts in this session"
       ref={(el) => (nav = el)}
       onKeyDown={onKeyDown}
+      // Tabbing in, or the window regaining focus on an item, opens the panel;
+      // focus leaving the rail (or the window) folds it.
+      onFocusIn={() => setTocOpen(true)}
       onFocusOut={(e) => {
         if (!(e.relatedTarget instanceof Node) || !nav?.contains(e.relatedTarget))
           setTocOpen(false);
