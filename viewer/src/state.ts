@@ -389,7 +389,11 @@ export async function select(
 // Reflect the currently visible post in the route (replace, so scrolling
 // doesn't pollute history).
 export function focusPost(postId: string) {
-  setCurrentPostId(postId);
+  // Scroll-driven tracking pauses while the table of contents is open for
+  // keyboard use: a jump's own scroll brings neighbouring cards into view and
+  // would otherwise flip the current item away from the one just chosen. The
+  // panel sets the current post itself when it jumps.
+  if (!tocOpen()) setCurrentPostId(postId);
   const sid = selected();
   if (sid) host().router.navigate({ sessionId: sid, surfaceId: postId }, { replace: true });
 }

@@ -720,12 +720,15 @@ test("a table of contents rail appears from four posts and is keyboard-driven", 
   await expect(toc.locator(".toc-item")).toHaveCount(4);
   await expect(toc.locator(".toc-item").first()).not.toBeInViewport();
 
-  // → from main opens the list on the current post
+  // → from main opens the list on the post in view and focuses it; while the
+  // panel is open, in-view tracking pauses so the current item only moves by key
   await page.locator("main").focus();
   await page.keyboard.press("ArrowRight");
   await expect(toc).toHaveClass(/open/);
-  await expect(toc.locator(".toc-item.on")).toContainText("One");
+  await expect(toc.locator(".toc-item.on")).toBeFocused();
   await expect(toc.locator(".toc-item.on")).toContainText("updated");
+  await page.keyboard.press("Meta+ArrowUp");
+  await expect(toc.locator(".toc-item.on")).toContainText("One");
   await expect(toc.locator(".toc-item.on")).toBeFocused();
   // opening must not scroll the page or the app shell sideways
   expect(
@@ -756,7 +759,18 @@ test("a table of contents rail appears from four posts and is keyboard-driven", 
   await expect(toc).not.toHaveClass(/open/);
   await expect(page.locator("main")).toBeFocused();
 
-  // `]` toggles it from anywhere
+  // `]` toggles it from anywhere; Enter confirms the jump and folds it
+  await page.keyboard.press("]");
+  await expect(toc).toHaveClass(/open/);
+  await expect(toc.locator(".toc-item.on")).toBeFocused();
+  await page.keyboard.press("Meta+ArrowDown");
+  await expect(toc.locator(".toc-item.on")).toContainText("Four");
+  await page.keyboard.press("ArrowUp");
+  await expect(toc.locator(".toc-item.on")).toContainText("Three");
+  await page.keyboard.press("Enter");
+  await expect(toc).not.toHaveClass(/open/);
+  await expect(page.locator("main")).toBeFocused();
+  await expect(page).toHaveURL(new RegExp(`/session/${session}/p/`));
   await page.keyboard.press("]");
   await expect(toc).toHaveClass(/open/);
   await expect(toc.locator(".toc-item.on")).toBeFocused();
@@ -778,6 +792,14 @@ test("Cmd+B toggles the desktop sidebar", async ({ page, server }) => {
   await expect(aside).toHaveCSS("width", "40px");
   await page.keyboard.press("[");
   await expect(aside).toHaveCSS("width", "248px");
+
+  // ← from the stream reopens a collapsed sidebar and lands on the session
+  await page.keyboard.press("[");
+  await expect(aside).toHaveCSS("width", "40px");
+  await page.locator("main").focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(aside).toHaveCSS("width", "248px");
+  await expect(page.locator(".sess.sel")).toBeFocused();
 });
 
 test("the desktop sidebar can collapse to a minimal rail and expand again", async ({

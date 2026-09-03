@@ -485,9 +485,16 @@ export default function App() {
                 }
                 if (event.key !== "ArrowLeft") return;
                 event.preventDefault();
-                [...root().querySelectorAll<HTMLElement>(".sess[data-id]")]
-                  .find((item) => item.dataset.id === selected())
-                  ?.focus();
+                // ← always reaches the sidebar: reopen it first if it's collapsed
+                // (desktop rail) or closed (phone drawer), then focus the
+                // selected session once it has rendered.
+                if (window.matchMedia("(max-width: 700px)").matches) setNavOpen(true);
+                else setSidebarCollapsed(false);
+                requestAnimationFrame(() =>
+                  [...root().querySelectorAll<HTMLElement>(".sess[data-id]")]
+                    .find((item) => item.dataset.id === selected())
+                    ?.focus(),
+                );
               }}
               onScroll={() => {
                 if (nearNewEdge()) setPillTarget(null);

@@ -1,8 +1,16 @@
-import { createEffect, createMemo, For, Show } from "solid-js";
+import { createEffect, createMemo, For, onCleanup, onMount, Show } from "solid-js";
 import { relTime } from "./api.ts";
 import { cardForPost } from "./Card.tsx";
 import { root } from "./host.ts";
-import { currentPostId, focusPost, orderedPosts, setTocOpen, stepPost, tocOpen } from "./state.ts";
+import {
+  currentPostId,
+  focusPost,
+  orderedPosts,
+  setCurrentPostId,
+  setTocOpen,
+  stepPost,
+  tocOpen,
+} from "./state.ts";
 
 // Sessions with more than this many posts get the table of contents.
 export const TOC_MIN_POSTS = 4;
@@ -35,6 +43,7 @@ export function PostToc() {
   };
   const jump = (id: string | null) => {
     if (!id) return;
+    setCurrentPostId(id);
     cardForPost(id)?.scrollIntoView({ behavior: "instant", block: "start" });
     focusPost(id);
     focusItem(id);
@@ -46,7 +55,17 @@ export function PostToc() {
 
   // Opening from the keyboard hands focus to the current item.
   createEffect(() => {
-    if (tocOpen()) requestAnimationFrame(() => focusItem(current()));
+    // Re-check on the frame: a `]` pressed again before it runs has closed
+    // the panel, and focusing then would reopen it via onFocusIn.
+    if (tocOpen()) requestAnimationFrame(() => tocOpen() && focusItem(current()));
+  });
+  // A pointer landing anywhere outside the rail folds it.
+  onMount(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (tocOpen() && e.target instanceof Node && !nav?.contains(e.target)) setTocOpen(false);
+    };
+    root().addEventListener("pointerdown", onPointerDown as EventListener);
+    onCleanup(() => root().removeEventListener("pointerdown", onPointerDown as EventListener));
   });
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -56,7 +75,8 @@ export function PostToc() {
     else if (e.key === "ArrowUp") next = stepPost(ids(), current(), edge ? "first" : -1);
     else if (e.key === "Home") next = stepPost(ids(), current(), "first");
     else if (e.key === "End") next = stepPost(ids(), current(), "last");
-    else if (e.key === "ArrowLeft" || e.key === "Escape") {
+    else if (e.key === "ArrowLeft" || e.key === "Escape" || e.key === "Enter") {
+      // The move already jumped; Enter/Esc/← just fold the panel.
       e.preventDefault();
       close();
       return;
@@ -76,8 +96,10 @@ export function PostToc() {
       // focus leaving the rail (or the window) folds it.
       onFocusIn={() => setTocOpen(true)}
       onFocusOut={(e) => {
-        if (!(e.relatedTarget instanceof Node) || !nav?.contains(e.relatedTarget))
-          setTocOpen(false);
+        // Focus moving elsewhere in the page folds the panel. A null
+        // relatedTarget is the window blurring (or a click on inert content),
+        // which must not close it mid-use; clicks outside are handled below.
+        if (e.relatedTarget instanceof Node && !nav?.contains(e.relatedTarget)) setTocOpen(false);
       }}
     >
       <div class="toc-ticks" aria-hidden="true">
