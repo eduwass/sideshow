@@ -88,6 +88,10 @@ export function cardForPost(id: string): HTMLDivElement | null {
 
 // Size a post's surface iframe from a height the in-frame bridge reported. Min
 // one line, max generous enough for a long diff/markdown without runaway growth.
+// Versioned surface responses are `immutable`, so a change to how the SERVER
+// renders an unchanged post (a renderer fix, new theme CSS) never reaches a
+// browser that already cached it. Bump this to bust those cached frames.
+const SURFACE_RENDER_REV = 3;
 const MIN_FRAME_H = 24;
 const MAX_FRAME_H = 4000;
 const RECENT_UPDATE_MS = 2 * 60 * 1000;
@@ -219,7 +223,7 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
   // and the browser's immutable copy) would keep the previous palette.
   const surfaceSrc = (surfaceIndex: number) =>
     appPath(
-      `/s/${props.post.id}?part=${surfaceIndex}&ver=${props.post.version}&cb=${props.post.version}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}&render=2`,
+      `/s/${props.post.id}?part=${surfaceIndex}&ver=${props.post.version}&cb=${props.post.version}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}&render=${SURFACE_RENDER_REV}`,
     );
 
   const anchoredComments = (surfaceIndex: number) =>
@@ -403,7 +407,7 @@ export function Card(props: { post: Post | ViewerPost; standalone?: boolean }) {
                     for (const [surface, frame] of surfaceFrames) {
                       // `?part=` is the legacy wire query key for a surface index.
                       frame.src = appPath(
-                        `/s/${props.post.id}?part=${surface}&ver=${ver}&cb=${cb}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}&render=2`,
+                        `/s/${props.post.id}?part=${surface}&ver=${ver}&cb=${cb}&theme=${activeTheme()}&mode=${resolvedMode()}&trev=${themeRevision()}&render=${SURFACE_RENDER_REV}`,
                       );
                     }
                   }}
