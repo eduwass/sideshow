@@ -408,6 +408,20 @@ svg { max-width: 100%; height: auto; }
 // (row stripes, the cScale/surface color ramps, the edge-label background).
 // Leave it unset and they're all computed for a light canvas, so they never
 // flip — "some of the diagram changes on toggle, but not all of it."
+//
+// But a palette doesn't have to match the slot it sits in: a single-scheme custom
+// theme ships the SAME dark palette as both `light` and `dark`. So the flag is
+// read off the palette's own canvas, and `mode` is only the fallback for a color
+// we can't parse — otherwise a dark palette in light mode derives near-white ER
+// rows under its white text.
+function isDarkColor(hex: string): boolean | undefined {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return undefined;
+  const h = m[1]!.length === 3 ? m[1]!.replace(/./g, "$&$&") : m[1]!;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return 0.299 * r! + 0.587 * g! + 0.114 * b! < 128;
+}
+
 function mermaidThemeVars(
   p: Palette,
   mode?: Mode,
@@ -425,9 +439,9 @@ function mermaidThemeVars(
   const accentBg = p.info.bg;
   return {
     themeVariables: {
-      // Pin the scheme so mermaid's darkMode-branched derivations resolve the
-      // same way the palette we read from did (both come from `mode`).
-      darkMode: mode === "dark",
+      // Pin the scheme so mermaid's darkMode-branched derivations resolve for
+      // the canvas this palette actually draws.
+      darkMode: isDarkColor(surface) ?? mode === "dark",
       fontFamily: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`,
       fontSize: "14px",
       // The canvas mermaid derives against. Several colors default to
@@ -456,6 +470,9 @@ function mermaidThemeVars(
       classText: text,
       secondaryTextColor: text,
       tertiaryTextColor: text,
+      // ER attribute rows; see the themeCSS note on why these alone don't land.
+      rowOdd: surface,
+      rowEven: bg,
       clusterBkg: bg,
       clusterBorder: border,
       edgeLabelBackground: bg,
@@ -483,6 +500,15 @@ function mermaidThemeVars(
       .node.accent > path { fill: ${accentBg}; stroke: ${accent}; }
       .node.accent .nodeLabel, .node.accent span, .node.accent text { fill: ${accent}; color: ${accent}; }
       .flowchart-link.accentLine, .edgePath.accentLine > .path { stroke: ${accent}; }
+      /* ER entities are drawn as paths with INLINE fill/stroke attributes that
+         mermaid 11 reads from its stock theme, ignoring themeVariables — near-white
+         boxes under our text color. CSS outranks presentation attributes, so
+         restate the palette here (fill paths carry stroke="none", outlines and
+         dividers fill="none"). */
+      g[id*="-entity-"] .outer-path path[stroke="none"] { fill: ${panel}; }
+      g[id*="-entity-"] path[fill="none"] { stroke: ${border}; }
+      .row-rect-odd path { fill: ${surface}; }
+      .row-rect-even path { fill: ${bg}; }
     `,
   };
 }

@@ -241,6 +241,29 @@ test("a mermaid page pins mermaid's derived colors to the scheme so the whole di
   }
 });
 
+test("a mermaid page reads darkMode off the palette, not the slot it sits in", () => {
+  // A single-scheme custom theme ships its dark palette as `light` too. Trusting
+  // the mode there made mermaid derive near-white ER rows under white text.
+  const base = themeById("github");
+  const theme = { ...base, light: base.dark };
+  const page = renderMermaidPage({
+    mermaid: "erDiagram\n  A { int id }",
+    origin: ORIGIN,
+    theme,
+    mode: "light",
+  });
+  const vars = JSON.parse(page.match(/themeVariables: (\{.*?\}),\n\s*themeCSS:/s)![1]!);
+  assert.equal(vars.darkMode, true, "dark palette in the light slot still pins darkMode:true");
+  assert.equal(vars.rowOdd, base.dark.surface, "ER rows are palette tokens, not derived");
+  assert.equal(vars.rowEven, base.dark.bg);
+  // mermaid 11 paints ER boxes from its stock theme via inline attributes, so
+  // the palette has to be restated in themeCSS to actually reach them.
+  assert.ok(
+    page.includes(`.row-rect-odd path { fill: ${base.dark.surface}; }`),
+    "ER row fill is overridden in themeCSS",
+  );
+});
+
 test("a no-mode mermaid page chooses the user's system scheme in the iframe", () => {
   const auto = renderMermaidPage({ mermaid: "graph TD; A-->B", origin: ORIGIN, theme: "github" });
   assert.ok(
